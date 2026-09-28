@@ -1,5 +1,32 @@
 # Changelog
 
+## 2.3.2 (2026-09-29)
+
+### Bug Fixes
+
+- **插件在 DSH 0.2.0-rc.1 上整个不加载——peer 上界 `<0.2.0-0` 把 0.2.0 的预发布线一起挡掉了**（用户升级宿主后发现，2.3.1 的实际故障）：
+  - **现象**：升级到 0.2.0-rc.1 后插件「凭空消失」——模型选择器里没有 `trae` / `trae-global`，插件设置卡片不见，用量路由 `/plugins/dsh-connect-trae/usage` 返回 **404**。不是某个功能坏掉，是 bundle 从未挂载。
+  - **根因**：DSH 自 0.1.7-rc.1 起有一道 **bundle 级 peer 门禁**（`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility`）：`loadProfileDirectory()` 逐条比对 bundle 自己声明的 DSH peer，任一条不满足就**抛错并整体跳过该 bundle**，只往 stderr 写一行 `skipping profile bundle ...`。本插件 8 条范围写的是 `>=0.1.7-rc.1 <0.2.0-0`，而 **SemVer 里 `0.2.0-rc.1 < 0.2.0-0`**——`-0` 这个上界本意是「排除 0.2.0 正式版」，实际却把**整个 0.2.0 预发布线**也排除了。宿主的判定是 `semver.satisfies(runtime, range, {includePrerelease: true})`，在这条范围下对 `0.2.0-rc.1` 返回 `false`。
+  - **不是 0.2.0 破坏了契约**：逐符号核对确认本插件消费的 API 在 0.2.0-rc.1 上**全部未变**（`resolveRetryPolicy`、`PiAiAdapter`、`ResolvedPiAiProviderProfile`、`withFileLock`、`writeFileAtomic`、`resolveDshHome`、`AttachmentStore` 的声明逐字一致；插件触及的 `dsh-atomic-write` / `dsh-home-paths` / `dsh-attachment` / `dsh-settings` / `dsh-host-webserver` / `dsh-client-ui-slots` 源码**逐字节相同**）。同级 `dsh-connect-workbuddy` 2.1.1 写的是 `<0.2.0`——**放行 0.2.0 预发布、只挡正式版**，因此照常加载；本插件用的 `-0` 是同一意图下多写了一个 `-0`，恰好把预发布线也挡在门外。差别只在这一个字符。
+  - **也不是本插件独有的现象**：本机 profile 的 19 个 bundle 里有 **5 个**同时被这道门禁拒绝（本插件、`@changfenhuang/dsh-genui`、`dsh-better-reasoning-effort`、`dsh-free-search`、`dsh-rewind-plugin`）。用宿主自带的门禁逐条判定，这 5 个全部不在挂载行里、其余全部 `active`——判定与观测逐一吻合，排除了「判定模型与宿主不一致」。
+  - **修法**：8 条 peer 上界改为 `>=0.1.7-rc.1 <0.3.0-0`——放行 0.1.7 与 0.2 两条线（含各自的 alpha/rc），仍挡住未审查的 0.3 线。用宿主自己发行的门禁代码复验：0.1.7-rc.1 / 0.1.7-rc.2 / 0.2.0-alpha.1 / 0.2.0-rc.1 / 0.2.0 / 0.2.9 全部放行，0.3.0-rc.1 / 0.3.0 / 1.0.0 仍被拒绝。
+  - **`devDependencies` 一并升到 0.2.0-rc.1**：否则本地 typecheck / 测试验的是 0.1.7 的契约，而用户跑的是 0.2.0——「开发树与用户解析不一致」正是上一轮 `pnpm-workspace.yaml` 里为 schemastery 写过的那类隐患。
+  - **为什么 CI 全绿却漏掉了**：范围写错不会让任何断言变红——`tsc` 通过（范围只是字符串）、345 条单测通过（插件自身代码没动）、`pnpm install` 通过（devDependency 钉的版本满足那段写错的范围）、CI 通过。**只有真实宿主会拒绝加载**。这个缺口已由下面的回归测试补上。
+
+### Tests
+
+- **新增 `tests/dsh-peer-range.spec.ts`（+22 例，全仓 345 → 367）**：把「peer 范围必须覆盖哪些运行时」变成可执行的断言，而不只是一句文档。
+  - **逐条范围断言四个边界**：**必须放行** 0.1.7-rc.1 / 0.1.7-rc.2 / 0.1.9 / **0.2.0-alpha.1** / 0.2.0-rc.1 / 0.2.0 / 0.2.9；**必须拒绝** 0.3.0-rc.1 / 0.3.0 / 1.0.0。只断言「0.2.0-rc.1 能过」是不够的——那样把范围放宽成完全没有上界的 `>=0.1.7-rc.1` 也会通过。
+  - **镜像宿主而不是自创判定**：宿主用 `semver.satisfies(runtime, range, {includePrerelease: true})`，本测试用同一选项，并**单独断言该选项确实是必需的**（同一条范围在默认选项下会拒绝 `0.2.0-rc.1`）——否则将来 semver 语义一变，断言会静默地不再测宿主真正做的事。
+  - **点名禁止 `<0.2.0-0` 回归**：把这次故障的写法单独钉死，因为它在「整理版本范围」时很容易被误改回去。
+  - **守护开发树一致性**：断言每个声明了 peer 范围的包都在 `devDependencies` 里有钉住的版本、且该版本落在自己声明的范围内；另断言 `dsh.client.inject` 里的每个客户端包都有 devDependency 钉版本。（客户端 roster 那 5 个包没有 peer 范围——宿主从自己的图解析它们，因此只断言「有钉版本」，不虚构范围。）
+  - **变异验证**（确认测试真的有约束力，不是空转）：把范围改回 `<0.2.0-0` → **10 例失败**；改成无上界的 `>=0.1.7-rc.1` → **8 例失败**；把 peer 下界抬到 `>=0.2.0-rc.1` 但留下 0.1.7 的 devDependency 钉 → **8 例失败**。三次变异全部被抓住，恢复后 22 例全绿。
+
+### Docs
+
+- **新增 `docs/DSH_0.2.0_RC1_IMPACT_CHECK.md`**：0.1.7-rc.2 → 0.2.0-rc.1 的完整影响面核对（261 提交 / 1109 文件 / 0 处破坏性提交；插件触及的包逐字节比对；类型级与运行时值级符号核对各 0 处移除；端到端类型验证）。含方法论备注：宿主 `app.asar` 内的 payload 基准在本机实测为 `8 + headerSize`（不是常见的 `16 + headerSize`），需用条目 `integrity.hash` 做 SHA256 校验后定位，否则会读出错位数据。
+- **README（中英）新增「peer 上界为什么不写 `<0.2.0`」**：给出三种写法的对照表与故障成因，说明该类错误为什么没有 CI 能拦、只能靠专门的测试。
+
 ## 2.3.1 (2026-09-26)
 
 ### Features
