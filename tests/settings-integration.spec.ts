@@ -190,6 +190,70 @@ describe('Trae provider registration', () => {
       expect(glm?.name).toBe('GLM-5.2 · x0.79')
     } finally { await restore() }
   })
+
+  /**
+   * Issue #16, end to end through the real plugin: the runtime catalog must
+   * report `image` for a model Trae itself marks multimodal, with no user
+   * opt-in written anywhere. Driven through a saved `lastCatalog` because that
+   * is the path a restarted host takes before any live refresh lands, so the
+   * flag has to survive both the settings schema and the derive step — a unit
+   * test on `applyImageSelection` alone would not prove either.
+   */
+  it('advertises image input for upstream-multimodal models without any opt-in', async () => {
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    const restore = await isolatedPlugin(ctx)
+    try {
+      await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('trae')
+
+      await ctx.settings.update(Trae.TRAE_SETTINGS_NS, {
+        regions: {
+          cn: {
+            lastCatalog: [
+              { id: 'kimi-k3', name: 'Kimi-K3', contextWindow: 256_000, input: ['text'], multimodal: true },
+              { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 200_000, input: ['text'], multimodal: false },
+            ],
+            enabledModelIds: ['kimi-k3', 'glm-5.2'],
+            imageModelIds: [],
+          },
+        },
+      })
+
+      const models = await ctx.llm.listModels('trae')
+      // Trae says multimodal → image, with no `imageModelIds` entry at all.
+      expect(models.find(model => model.id === 'kimi-k3')?.inputModalities).toEqual(['text', 'image'])
+      // Trae says not multimodal, and the user did not tick it → still text.
+      expect(models.find(model => model.id === 'glm-5.2')?.inputModalities).toEqual(['text'])
+    } finally { await restore() }
+  })
+
+  it('still honours an explicit opt-in for a model Trae marks text-only', async () => {
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    const restore = await isolatedPlugin(ctx)
+    try {
+      await expect.poll(() => ctx.llm.listProviders().map(provider => provider.id)).toContain('trae')
+
+      await ctx.settings.update(Trae.TRAE_SETTINGS_NS, {
+        regions: {
+          cn: {
+            lastCatalog: [
+              { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 200_000, input: ['text'], multimodal: false },
+            ],
+            enabledModelIds: ['glm-5.2'],
+            imageModelIds: ['glm-5.2'],
+          },
+        },
+      })
+
+      const models = await ctx.llm.listModels('trae')
+      expect(models.find(model => model.id === 'glm-5.2')?.inputModalities).toEqual(['text', 'image'])
+    } finally { await restore() }
+  })
 })
 
 describe('per-region provider switch (issue #11)', () => {

@@ -39,6 +39,7 @@ A [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-harness) bund
 - **DSH local tool loop** — gets pending structured `tool_calls` from Trae `llm_utils_chat`, lets DSH execute its own local tools, then returns tool results to the model.
 - **Dual-region detection (CN / international)** — detects local sign-ins across Trae CN, TRAE SOLO CN, Trae, and TRAE SOLO installs. The region is derived from the credential's own `userRegion` claim (host suffix and edition label as fallbacks), with no manual switch.
 - **Region-isolated directories and selections** — CN and international each keep their own model directory, enabled picks, image opt-ins, and context budgets, and each provider reads only its own slot.
+- **Vision follows Trae's own declaration** — when Trae marks a model `multimodal`, the plugin advertises it as such with no manual tick per model (issue #16). The rule is "**models you tick ∪ models Trae marks multimodal**": models Trae marks `false`, or does not mark at all, stay text-only and can still be turned on by hand. A row enabled automatically is shown ticked and read-only, with the reason. See "Image input" below.
 - **Account switching** — refreshes the token list and lets users select an account without storing tokens in DSH settings.
 - **Read-only usage and model management** — Work/general credits on CN accounts, subscription/trial status on international ones; enable Trae models freely. Read-only queries consume nothing.
 - **Daily check-in claiming** — a one-click claim on the CN card (the button shows the daily reward, and reads "Claimed today" and disables itself once that account has been paid). This is the plugin's **only** operation that changes account state, and it runs only when you click. Trae allows **one check-in per device per day**: after switching accounts, if this machine's slot is already spent (by any account), the selected account cannot claim here that day — the card explains that rather than pretending the account was paid. The international side has no check-in activity, so no button is shown there.
@@ -63,24 +64,43 @@ Usage overview hits the read-only `https://api.trae.cn/trae/api/v2/pay/*` and `/
 
 > See `docs/IMPLEMENTATION_PLAN.md`, `docs/SOLO_ROUTE_DECISION.md`, `docs/USAGE_API_RESEARCH.md`.
 
+## Image input
+
+The plugin declares whether a model accepts images, and DSH uses that to decide whether an attachment is **sent as-is** or **degraded into a text description**. That makes the declaration a hard switch, not a cosmetic label.
+
+The rule is the **union of two sources** (issue #16):
+
+| Source | Meaning |
+|---|---|
+| Trae's own `multimodal` field | Trae's own answer to "does this model read images". The Trae IDE's attach-image button is driven purely by this field, with no user switch |
+| Your manual `imageModelIds` ticks | Explicit choice. Even if Trae later stops reporting the flag for that model, your tick is never revoked |
+
+Notes:
+
+- **Only `multimodal === true` enables it automatically.** A missing field (a directory saved by an older release, a fallback row) or an explicit `false` stays text-only — better to not send than to advertise a capability we cannot confirm.
+- **Automatic does not mean automatic sending.** It only lets DSH attach an image to that model; you still choose to attach one per message. The plugin never sends an image on your behalf.
+- **An automatically enabled row is shown ticked and read-only.** Under the union, unticking it would be re-applied immediately, so offering a clickable box would be a lie. There is currently no per-model "force off" escape hatch; if you want one, say so on issue #16.
+- Manual ticks still work for models Trae marks `false` (or does not mark), which is the escape hatch for "upstream does not say so, but it actually works".
+
 ## Model coverage
 
 This plugin serves models from Trae's **SOLO channel** (`DeepSeek-V4-Flash-Official`, `DeepSeek-V4-Pro-Official`, `GLM-5.3`, `GLM-5.2`, `Kimi-K3`, `MiniMax-M3`, `Qwen3.8-Max`, `Doubao-Seed-*`, …), for both the domestic and international sides.
 
-The following four models currently come from the **TraeCode (Trae IDE) channel** and have **not** been opened up to the SOLO channel, so this plugin does **not** support them yet:
+The following three models currently come from the **TraeCode (Trae IDE) channel** and have **not** been opened up to the SOLO channel, so this plugin does **not** support them yet:
 
 | Model |
 | --- |
-| `deepseek-v4.1-flash` |
 | `glm-5.3-flash` |
 | `kimi-k2.8-preview` |
 | `qwen3.8-flash` |
 
-These four are reachable only inside the Trae IDE client; there is no callable channel for them on the plugin side. **They can only be supported once Trae officially opens them up to the SOLO channel.**
+These three are reachable only inside the Trae IDE client; there is no callable channel for them on the plugin side. **They can only be supported once Trae officially opens them up to the SOLO channel.**
+
+> `deepseek-v4.1-flash` used to be listed here — `docs/DS41_CALLABILITY.md` (evidence gathered 2026-09-15) measured `4001 param is invalid` from all eight SOLO functions. **Trae has since opened it up to the SOLO channel**: it now ships in the live directory with `wireFunction: solo_work_remote` and calls succeed (verified against a live refresh). This page had not caught up, so it is removed from the table.
 
 > Note the distinction: **`GLM-5.3` is supported** (it goes through the SOLO channel), but **`glm-5.3-flash` is not** — they are different models.
 
-To use these four models today, use the **Trae IDE itself**.
+To use these three models today, use the **Trae IDE itself**.
 
 ## Install
 

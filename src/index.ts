@@ -277,6 +277,13 @@ const modelConfig = z.object({
   // split across SOLO-mode functions; glm-5.3 answers only solo_work_remote).
   // Persisted so a saved directory keeps working after a restart.
   wireFunction: z.string(),
+  // Trae's own image capability flag. Persisted for the same reason as
+  // `wireFunction`: the runtime catalog is re-derived from `lastCatalog` on
+  // every save and every restart, so a flag dropped here would switch "auto
+  // image input" back off the moment the user saved anything, and again after a
+  // restart (issue #16). Absent on rows saved before this field existed, which
+  // reads as "not capable" rather than "assume capable".
+  multimodal: z.boolean(),
 })
 
 const regionStateConfig = z.object({

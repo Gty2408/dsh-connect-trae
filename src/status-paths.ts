@@ -74,6 +74,13 @@ export interface TraeWebModel {
     defaultEffort?: string
   }
   maxContextWindow?: number
+  /**
+   * Trae's own image-capability flag, as the runtime catalog carries it. The
+   * card renders these rows with their image checkbox already ticked so the
+   * control matches what DSH is actually told (issue #16); absent means the
+   * directory did not declare it, which is not a capability claim either way.
+   */
+  multimodal?: boolean
 }
 
 /**

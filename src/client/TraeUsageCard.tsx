@@ -494,6 +494,24 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
   const savedEnabledIds = status.status === 'signed-in' ? new Set(status.enabledModelIds) : new Set<string>()
   const activeEnabledIds = draft?.enabledIds ?? savedEnabledIds
   const activeImageIds = draft?.imageIds ?? savedImageIds
+  /**
+   * Effective image capability of one row, mirroring what the Host reports to
+   * DSH: the user's opt-in unioned with Trae's own `multimodal` flag (issue
+   * #16). Rendering the union is what keeps this checkbox truthful — showing the
+   * raw `imageModelIds` would draw an unticked box next to a model the plugin
+   * is in fact advertising as image-capable.
+   */
+  const rowAcceptsImage = (model: TraeWebModel): boolean =>
+    activeImageIds.has(model.id) || model.multimodal === true
+  /**
+   * A row Trae itself declares multimodal needs no manual opt-in, so its box is
+   * shown ticked and read-only rather than offering a toggle that the union
+   * would immediately undo. Turning image input off for such a model is
+   * deliberately not supported: the flag is the vendor's own capability answer,
+   * and enabling it only lets DSH attach an image the user still has to pick per
+   * message — it never sends one by itself.
+   */
+  const rowImageIsAutomatic = (model: TraeWebModel): boolean => model.multimodal === true
   const activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets
   const dirty = draft !== undefined
 
@@ -558,9 +576,18 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
       // Carry the region's on/off flag through: this write replaces the whole
       // slot, and dropping `enabled` would silently re-enable a provider the
       // user switched off just by saving its model list.
+      // `input` is re-derived by the Host from the user's opt-ins plus Trae's
+      // own multimodal flag, so it is persisted as text-only here to avoid
+      // freezing a decision the Host owns. `multimodal` must be carried through
+      // verbatim: it IS that upstream fact, and dropping it would switch auto
+      // image input off for every model the moment the user saved (issue #16).
       const nextSlot = {
         enabled: regionOn(activeRegion),
-        lastCatalog: visibleModels.map(model => ({ ...model, input: ['text'] })),
+        lastCatalog: visibleModels.map(model => ({
+          ...model,
+          input: ['text'],
+          ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
+        })),
         enabledModelIds: [...activeEnabledIds],
         imageModelIds: [...activeImageIds].filter(id => activeEnabledIds.has(id)),
         contextBudgets: activeContextBudgets,
@@ -839,8 +866,9 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
                                 <label className="dsm-trae-model-image">
                                   <input
                                     type="checkbox"
-                                    checked={activeImageIds.has(model.id)}
-                                    disabled={settingsScope?.getSnapshot().writable !== true || saving}
+                                    checked={rowAcceptsImage(model)}
+                                    disabled={rowImageIsAutomatic(model) || settingsScope?.getSnapshot().writable !== true || saving}
+                                    title={rowImageIsAutomatic(model) ? t('row.modelImageAuto') : undefined}
                                     onChange={() => { toggleImage(model.id) }}
                                   />
                                   <span>{t('row.modelImage')}</span>

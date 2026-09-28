@@ -76,11 +76,12 @@ export const en = {
   'row.contextBudget': 'DSH context budget',
   'row.modelOutput': 'Output {output}',
   'row.modelImage': 'Image',
+  'row.modelImageAuto': 'Enabled automatically: Trae marks this model multimodal.',
   'row.modelRate': '{rate}x credits',
   'row.modelReasoning': 'Reasoning: {efforts}',
   'row.modelReasoningSupported': 'Reasoning: supported',
   'row.modelUnknown': 'Unknown',
-  'row.modelCapabilityPending': 'Image input is enabled only for models you select.',
+  'row.modelCapabilityPending': 'Image input follows Trae\'s own multimodal flag, plus anything you tick yourself.',
   'row.cheer': 'Star on GitHub',
 } as const
 
@@ -158,10 +159,11 @@ export const zh: Record<TraeSettingsKey, string> = {
   'row.contextBudget': 'DSH 上下文预算',
   'row.modelOutput': '最大输出 {output}',
   'row.modelImage': '图片',
+  'row.modelImageAuto': '已自动开启：Trae 把该模型标为多模态。',
   'row.modelRate': '积分 {rate}x',
   'row.modelReasoning': '推理强度：{efforts}',
   'row.modelReasoningSupported': '推理：支持',
   'row.modelUnknown': '未知',
-  'row.modelCapabilityPending': '仅对你手动勾选的模型启用图片输入。',
+  'row.modelCapabilityPending': '图片输入跟随 Trae 自身的多模态标注，并叠加你手动勾选的模型。',
   'row.cheer': '鼓励一下',
 }

@@ -25,6 +25,23 @@ export interface TraeModelInfo {
   wireConfigName?: string
   /** The directory function this model must be called through (see {@link TraeWireModel.function}). */
   wireFunction?: string
+  /**
+   * Trae's own `multimodal` flag for this model, carried through from the
+   * directory that advertised it. It is the upstream's answer to "does this
+   * model read images", and {@link applyImageSelection} unions it with the
+   * user's explicit opt-ins.
+   *
+   * Deliberately NOT the same thing as `input`: `input` is what DSH is told
+   * this route accepts, while this field records what Trae said. Keeping both
+   * lets a future refresh re-derive `input` without losing the upstream fact,
+   * and lets the card explain WHY a model is image-capable.
+   *
+   * Absent means the directory did not say (an older `lastCatalog` saved before
+   * this field existed, a fallback row, or a directory entry that omitted the
+   * key). Absent is treated as false, never as "assume capable": sending an
+   * image to a model that cannot read one burns credits for a silent failure.
+   */
+  multimodal?: boolean
 }
 
 /**
@@ -107,12 +124,53 @@ export function traeModelDisplayName(model: Pick<TraeModelInfo, 'name' | 'credit
     : `${model.name} · x${model.creditMultiplier.toFixed(2)}`
 }
 
-/** Apply the user's explicit image opt-ins; upstream and saved row hints are ignored. */
+/**
+ * Whether one model should be offered image input.
+ *
+ * Two independent sources, unioned (issue #16):
+ *
+ *  - the user's explicit `imageModelIds` opt-in, which stays authoritative and
+ *    can still switch an individual model on;
+ *  - Trae's own `multimodal` flag, which is what makes "auto" work at all.
+ *
+ * Rationale: Trae's IDE enables its attach-image button purely from this flag
+ * (`metadata.capabilities.vision`), with no user switch, so a model Trae itself
+ * calls multimodal is one the vendor expects to receive images. Requiring a
+ * manual tick for those made this plugin the only place where a vendor-declared
+ * capability had to be re-enabled by hand.
+ *
+ * Why the flag alone is not enough, and the union is:
+ *
+ *  - the flag is advisory, not a contract. `llm_utils_chat` is a lightweight
+ *    SOLO channel and this plugin has been burned by `4001 param is invalid`
+ *    for ids that LOOKED valid, so the flag is not treated as proof of
+ *    callability — a model still has to have survived the wire join to appear
+ *    at all. The flag only decides image input, never model availability.
+ *  - Users who already ticked a model keep that tick even after a refresh stops
+ *    reporting the flag, so the union never silently revokes a working setup.
+ *  - `input` remains the ONLY thing told to DSH: a model that ends up without
+ *    `image` here is one DSH will degrade images to text for, which is the
+ *    safe direction for a model whose capability we cannot confirm.
+ *
+ * `multimodal === true` is a strict test: absent, `false`, or any non-boolean
+ * leaves the model text-only unless the user opted in.
+ */
+export function traeModelAcceptsImage(
+  model: Pick<TraeModelInfo, 'id' | 'multimodal'>,
+  selected: ReadonlySet<string>,
+): boolean {
+  return selected.has(model.id) || model.multimodal === true
+}
+
+/** Apply the user's explicit image opt-ins plus Trae's own multimodal flag. */
 export function applyImageSelection(
   models: readonly TraeModelInfo[],
   selected: ReadonlySet<string>,
 ): TraeModelInfo[] {
-  return models.map(model => ({ ...model, input: selected.has(model.id) ? ['text', 'image'] : ['text'] }))
+  return models.map(model => ({
+    ...model,
+    input: traeModelAcceptsImage(model, selected) ? ['text', 'image'] : ['text'],
+  }))
 }
 
 /** One row from `get_detail_param`: the authoritative llm_utils_chat wire id + display name. */
@@ -202,6 +260,10 @@ export function mergeTraeModelSources(
       ...model.maxContextWindow === undefined ? {} : { maxContextWindow: model.maxContextWindow },
       ...creditMultiplier === undefined ? {} : { creditMultiplier },
       input: ['text'],
+      // Trae's own answer to "does this model read images". Carried through so
+      // `applyImageSelection` can union it with the user's opt-ins (issue #16);
+      // `input` stays text here and is decided by that single later pass.
+      ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
       reasoningSupported: model.reasoningSupported,
       ...model.reasoning === undefined ? {} : {
         reasoning: model.reasoning,
@@ -234,7 +296,7 @@ export function applyContextBudgets(
   }))
 }
 
-/** Convert Trae metadata into text-only model rows; image support is user-owned configuration. */
+/** Convert Trae metadata into catalog rows; image input is decided by {@link applyImageSelection}. */
 export function discoveredCatalog(models: readonly TraeDiscoveredModel[]): TraeModelInfo[] {
   const result: TraeModelInfo[] = []
   for (const model of models) {
@@ -245,6 +307,9 @@ export function discoveredCatalog(models: readonly TraeDiscoveredModel[]): TraeM
       ...model.maxContextWindow === undefined ? {} : { maxContextWindow: model.maxContextWindow },
       input: ['text'],
       ...model.creditMultiplier === undefined ? {} : { creditMultiplier: model.creditMultiplier },
+      // See mergeTraeModelSources: the upstream flag travels with the row so the
+      // one later image pass can union it with the user's explicit opt-ins.
+      ...model.multimodal === undefined ? {} : { multimodal: model.multimodal },
       reasoningSupported: model.reasoningSupported,
       ...model.reasoning === undefined ? {} : {
         reasoning: model.reasoning,

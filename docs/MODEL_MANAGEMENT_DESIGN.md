@@ -80,7 +80,7 @@ Trae
 | remote | `context_window_tokens.max` + `max_mode:true` | 可选的 Max 上下文预算；不生成第二个模型 id |
 | remote | `features` 二次 JSON 解析后的 `consumption_rate.data.rate` | 积分消耗倍率 |
 | remote | `reasoning_effort_config.options` / `default_level` | 推理强度档位 |
-| remote | `multimodal` | 文本/图片输入能力（仅展示，不作为图片授权依据） |
+| remote | `multimodal` | 文本/图片输入能力。**2.4.0 起参与图片授权**（与用户手动勾选取并集，见 issue #16）；**但仍不决定可用性**——能否出现在目录里只由下面的 wire join 决定 |
 | wire | `config_name` | `wireConfigName`：发往 `llm_utils_chat` 时替换展示 id 的 wire id |
 | wire | `display_config.display_name` | join 用的展示名 |
 | wire | `model_detail_list[].prompt_max_tokens` | wire 侧上下文窗口（`get_detail_param` **没有** `max_input_tokens` 字段） |

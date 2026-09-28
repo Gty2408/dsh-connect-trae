@@ -12,6 +12,7 @@ import {
   sanitizeCatalog,
   TraeCatalog,
   traeInputModalities,
+  traeModelAcceptsImage,
   traeModelDisplayName,
 } from '../src/catalog.ts'
 
@@ -59,24 +60,66 @@ describe('Trae catalog', () => {
     expect(cnIds).not.toContain('DeepSeek-V4-Pro')
   })
 
-  it('ignores uncertain upstream multimodal flags and keeps one text-only entry per model', () => {
+  it('carries the upstream multimodal flag onto the catalog row without granting image input by itself', () => {
     expect(RAW).toEqual([
       expect.objectContaining({
         id: 'qwen3.8-max', contextWindow: 200_000, maxContextWindow: 1_000_000,
-        creditMultiplier: 1.5, input: ['text'],
+        creditMultiplier: 1.5, input: ['text'], multimodal: true,
       }),
-      expect.objectContaining({ id: 'deepseek-v4-pro', contextWindow: 200_000, input: ['text'] }),
+      expect.objectContaining({ id: 'deepseek-v4-pro', contextWindow: 200_000, input: ['text'], multimodal: false }),
     ])
     expect(RAW.some(model => model.id.includes('@1m'))).toBe(false)
   })
 
-  it('uses only explicit image opt-ins and overwrites stale saved modalities', () => {
-    const stale = RAW.map(model => ({ ...model, input: ['text', 'image'] as ('text' | 'image')[] }))
-    expect(applyImageSelection(stale, new Set(['qwen3.8-max']))).toEqual([
+  it('unions explicit opt-ins with Trae\'s own multimodal flag', () => {
+    // Trae calls qwen3.8-max multimodal, so it is image-capable without a tick;
+    // deepseek-v4-pro is explicitly NOT, so it stays text-only until ticked.
+    expect(applyImageSelection(RAW, new Set())).toEqual([
       expect.objectContaining({ id: 'qwen3.8-max', input: ['text', 'image'] }),
       expect.objectContaining({ id: 'deepseek-v4-pro', input: ['text'] }),
     ])
+    expect(applyImageSelection(RAW, new Set(['deepseek-v4-pro']))).toEqual([
+      expect.objectContaining({ id: 'qwen3.8-max', input: ['text', 'image'] }),
+      expect.objectContaining({ id: 'deepseek-v4-pro', input: ['text', 'image'] }),
+    ])
+  })
+
+  it('never revokes a user opt-in, even when a refresh stops reporting the flag', () => {
+    // The union is one-directional: Trae dropping the flag must not silently
+    // rebuild a working setup into a text-only route.
+    const base = RAW[0]!
+    const missing = { ...base }
+    delete (missing as { multimodal?: boolean }).multimodal
+    for (const model of [{ ...base, multimodal: true }, { ...base, multimodal: false }, missing]) {
+      expect(applyImageSelection([model], new Set([model.id]))[0]?.input).toEqual(['text', 'image'])
+    }
+  })
+
+  it('treats a missing flag as not capable rather than assuming capability', () => {
+    // Rows saved before the flag was persisted, and fallback rows, carry no
+    // `multimodal`. "Unknown" must read as text-only: advertising image input a
+    // model may not have burns credits on a silent failure.
+    for (const model of RAW) {
+      const withoutFlag = { ...model }
+      delete (withoutFlag as { multimodal?: boolean }).multimodal
+      expect(applyImageSelection([withoutFlag], new Set())[0]?.input).toEqual(['text'])
+    }
+  })
+
+  it('overwrites stale saved modalities rather than trusting the persisted `input`', () => {
+    // `input` is re-derived on every pass; a row saved earlier as image-capable
+    // must not stay that way once neither source claims it.
+    const stale = RAW.map(model => ({ ...model, input: ['text', 'image'] as ('text' | 'image')[], multimodal: false }))
     expect(applyImageSelection(stale, new Set()).every(model => model.input?.join(',') === 'text')).toBe(true)
+  })
+
+  it('exposes traeModelAcceptsImage as the single capability predicate', () => {
+    expect(traeModelAcceptsImage({ id: 'a', multimodal: true }, new Set())).toBe(true)
+    expect(traeModelAcceptsImage({ id: 'a', multimodal: false }, new Set())).toBe(false)
+    expect(traeModelAcceptsImage({ id: 'a' }, new Set())).toBe(false)
+    expect(traeModelAcceptsImage({ id: 'a', multimodal: false }, new Set(['a']))).toBe(true)
+    // A tick for a DIFFERENT model must not leak capability across rows.
+    expect(traeModelAcceptsImage({ id: 'a' }, new Set(['b']))).toBe(false)
   })
 
   it('serves the whole directory when nothing is enabled yet', () => {

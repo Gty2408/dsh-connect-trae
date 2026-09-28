@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.4.0 (2026-09-29)
+
+> **包含仍未发布的 2.3.2。** 2.3.2 的 peer 范围修复（`>=0.1.7-rc.1 <0.2.0-0` → `<0.3.0-0`，见下一节）
+> 只提交到 git、未推送也未发 npm，因此**没有用户拿到过 2.3.2**；2.4.0 在同一棵树上，同时带上该修复。
+> 若你希望「先单独发一个只含关键修复的补丁版」，就先推 2.3.2 的 tag 并 `npm publish`，再把本节改号为 2.4.0。
+
+### Features
+
+- **识图能力改为跟随 Trae 自身的 `multimodal` 标注，不再要求逐一手勾**（issue #16）：
+  - **原来的行为**：插件唯一决定是否给某个模型开图片输入的入口是 `applyImageSelection()`，判据只有用户手动勾选的 `imageModelIds`；上游 `multimodal` 字段虽然在 `parseTraeRemoteModel` 里被解析出来，但**从不进入 `TraeModelInfo`**，等于被丢弃。于是 Trae 自己标为多模态的模型，在这里也必须手动勾一次才认图。
+  - **改后的判据**：`你手动勾选的 ∪ Trae 标注 multimodal=true 的`（新增 `traeModelAcceptsImage()` 作为唯一判据函数，`applyImageSelection()` 走它）。
+  - **为什么是并集而不是"只信上游"**：上游标注是**建议**而非契约——`llm_utils_chat` 是轻量 SOLO 通道，本插件历史上多次被 `4001 param is invalid` 坑过。所以上游标注**只决定图片输入，从不决定模型可用性**：模型能否出现在目录里仍只由 wire（`get_detail_param` 的 `config_name`）join 决定，标注不会把一个不可调用的模型放进来。
+  - **为什么也不"只信手动"**：Trae IDE 自己的附图按钮就是纯粹由 `capabilities.vision` 驱动的，没有任何用户开关。厂商已声明的能力还要用户再勾一次，只有本插件这一处。
+  - **缺失或为 false 一律按纯文本**：`multimodal` 缺失（旧版本保存的目录、静态兜底目录）或明确 `false` 都不自动开。宁可不发，也不对能力不确定的模型谎报"支持"——一旦声明 `image`，DSH 会把图片原样发出而不是降级成文字。
+  - **自动开启 ≠ 自动发图**：它只是让 DSH 允许给该模型附图；图片始终由你在对话里自己贴，插件不会替你发送任何东西。
+  - **卡片同步**：被自动开启的行显示为**已勾选且只读**并带说明（新增 `row.modelImageAuto`）。并集语义下取消勾选会被立刻重新加上，给它一个可点的框是在撒谎。目前**不提供**单个模型"强制关闭"的出口（那需要额外的 opt-out 状态）；如需请在该 issue 下提出。
+  - **实测结果**（本机 CN 账号，实时目录 15 个模型，用户零勾选）：8 个自动获得图片输入（`Doubao-Seed-Evolving`、`Doubao-Seed-2.1-Pro`、`Doubao-Seed-2.1-Turbo`、`deepseek-v4.1-flash`、`kimi-k3`、`minimax-m3`、`qwen3.8-max`、`qwen-3.7-plus`）；Trae 明确标 `false` 的 4 个（`glm-5.3`、`glm-5.2`、`DeepSeek-V4-Flash-Official`、`DeepSeek-V4-Pro-Official`）**正确地保持纯文本**；目录未标注的 3 个同样保持纯文本。
+  - **文档**：`docs/MODEL_MANAGEMENT_DESIGN.md` 里「仅展示，不作为图片授权依据」的描述随此改动失效（该字段现在确实参与授权，但**不**决定可用性）；README 新增「图片输入（识图）」一节说明完整语义（中英同步）。
+
+### Bug Fixes
+
+- **`multimodal` 必须随 `lastCatalog` 一起持久化，否则"自动识图"会在保存/重启后失效**：运行时目录每次保存与启动都从 `lastCatalog` 重新推导（`derive()` → `applyImageSelection()`）。若 schema 不声明该字段，它被剥掉后自动开图会立刻退回手动。已在 `modelConfig`（`src/index.ts`）显式声明 `multimodal: z.boolean()`，并在卡片保存处显式带上——卡片原本会强制把 `input` 写回 `['text']`（这是对的，`input` 由宿主推导），但 `multimodal` 是上游事实，不能跟着一起丢。
+- **README「暂不支持」表格过期**：`deepseek-v4.1-flash` 已从该表移除。`docs/DS41_CALLABILITY.md`（2026-09-15）取证时 8 个 SOLO function 全部返回 `4001`，但**上游后来把它开放到了 SOLO 通道**——当前实时目录里它带 `wireFunction: solo_work_remote`，已实测刷新确认可调用。表内其余 3 个（`glm-5.3-flash`、`kimi-k2.8-preview`、`qwen3.8-flash`）实测仍不在目录里，保留在表中。
+
+### Tests
+
+- **新增 6 例**（全仓 367 → 373），覆盖并集的四个方向：标注 true 自动开、标注 false 不开、缺失按不开、手动勾选永不撤销（含上游后来不再标注的情况），以及"别的模型的勾选不得串到本行"。
+- **新增 2 例端到端**（走真实插件 + `ctx.llm.listModels()`）：零勾选时标注为 true 的模型 `inputModalities === ['text','image']`；标注 false 的模型仍为 `['text']`。后者同时证明**手动勾选路径没被破坏**，且旧形状（不带 `multimodal` 的 `lastCatalog` 行）仍能通过 schema 校验。
+- **变异验证**（确认测试有约束力，3 次全部被抓）：① 把并集改回"仅手动勾选" → 3 例失败（含端到端那例）；② 让 schema 不声明 `multimodal` → 无法编译（弱信号，已改写为更真实的形式）；③ 在 `derive` 里于 `applyImageSelection` 之前剥掉该字段 → 端到端那例精确失败。恢复后 44 文件 373 例全绿。
+
 ## 2.3.2 (2026-09-29)
 
 ### Bug Fixes
