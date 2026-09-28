@@ -214,7 +214,43 @@ git stash pop -q                                    # 恢复
   我自己重新 `npm pack` 出来的 shasum 与线上不同（gzip 时间戳/元数据归一化所致），
   但逐文件哈希一致。以**线上 tarball 的 shasum 等于 publish 日志记录的 shasum** 为准。
 
-### 6.7 权限与确认边界（不可省略）
+### 6.7 第二类假故障：凭据错误出现在**上传完成之后**（2026-09-29 发布 2.4.0 实录）
+
+6.1 记的是「元数据传播不同步」造成的假象。2.4.0 又遇到一类**不同**的假故障，值得单列，因为它
+更隐蔽——**错误信息来自凭据，而不是传播**：
+
+**经过**：我用 `pnpm publish` 发布 2.4.0，终端报
+
+```
+📦 dsh-connect-trae@2.4.0 → https://registry.npmjs.org/
+[ERR_PNPM_OTP_NON_INTERACTIVE] The registry requires additional authentication,
+but pnpm is not running in an interactive terminal
+```
+
+据此向用户报告「发布失败，卡在 2FA，需要你手动发」。**这个结论是错的。** 用户随后手动
+`npm publish`，得到 `E409 You cannot publish over the previously published versions: 2.4.0`——
+这才发现包**早已发布成功**：
+
+```
+registry.time['2.4.0']  = 2026-09-28T20:12:26.305Z   # 与报错同一分钟
+registry.dist-tags      = { latest: '2.4.0' }
+用户那次 pack 的 shasum = 线上 tarball 的 shasum      # 同一份包，只是重复发布被拒
+```
+
+**教训**：**凭据类错误（EOTP / E401 / 非交互 OTP）可能出现在上传已经完成之后**——CLI 是先传包、
+再拿凭据去做后续动作，所以「凭据失败」与「包没上去」是两件事，不能互相推断。这与 6.1 的
+「传播延迟」是不同机制，但**结论相同：发布成败的唯一判据是 registry 的实际状态**。
+
+```bash
+# 唯一权威判据：registry 上有没有这个版本
+npm view dsh-connect-trae versions | tr ',' '\n' | grep -F "X.Y.Z"
+```
+
+**附带一条**：`E409 ... previously published versions` 与 `E409 ... previously staged version`
+是**不同**的两条信息。前者说明**线上已有该版本**（无需重发）；后者才是编号被预占。别混为一谈——
+混了就会把「已经发成功」误读成「编号冲突，需要顺延版本号」。
+
+### 6.8 权限与确认边界（不可省略）
 
 `RELEASING.md` 第 7 条已写明：**commit / tag / push / npm publish 都必须在用户明确确认后执行**。
 实践中建议这样分工并**先说清**：

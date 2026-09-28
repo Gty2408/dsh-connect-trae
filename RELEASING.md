@@ -2,9 +2,16 @@
 
 > 本文档是 `dsh-connect-trae` 的**唯一权威发布流程**。发布前请通读一遍。
 >
+> 九个步骤：① 确认代码/测试/版权 → ② 改版本号 → ③ CHANGELOG 定稿日期 → ④ 提交 + 打 tag + 推送
+> → ⑤ `npm publish` → ⑥ 2FA → ⑦ 验证发布成功 → ⑧ 发布后一致性核验 → ⑨ 创建 GitHub Release。
+> **⑤ 之后每一步都别省**：⑦⑧ 决定「是否真的发出去了、发的是不是这份源码」，⑨ 是用户在 GitHub 上
+> 能看到的那份发布说明。
+>
 > 🤖 **由 AI 助手代跑发布时，请先读 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) 第 6 节**
 > （「给 AI 助手发布时的备忘」）：记录了沙箱如何伪装成环境故障、为什么**不能用 tarball 能否下载**
 > 判断发布成败（2.0.5 曾因此差点误报失败）、npm 日志会被自己后续命令冲掉等实操坑。
+> **补充（2.4.0 实录）**：凭据类错误（EOTP / 非交互 OTP）可能出现在**上传完成之后**，
+> 同样会造成「明明发出去了却被判为失败」——判据一律回到 registry，见第 7 步。
 
 ## 前置条件
 
@@ -76,6 +83,9 @@ npm pack --dry-run
 
 `npm publish` 若提示 EOTP，按 npm CLI 给出的 URL 在浏览器登录确认即可，终端内的 `npm publish` 会自动继续。
 
+> ⚠️ **2FA 报错不一定代表「没发出去」。** 见第 7 步——发布是否成功，**只能以 registry 的实际状态为准**，
+> 不能以 `npm publish` 的退出信息为准。
+
 ### 7. 验证发布成功
 
 ```bash
@@ -84,6 +94,15 @@ npm view dsh-connect-trae dist-tags.latest   # 应为 X.Y.Z
 ```
 
 > 刚发布后 registry 读缓存可能有短暂延迟，稍等重查即可。
+
+> ⚠️ **发布失败时先查 registry，别先看错误信息。** 2.4.0 发布当天，`pnpm publish` 报了
+> `ERR_PNPM_OTP_NON_INTERACTIVE`，据此判为「没发出去」——**判错了**：包在报这条错误之前就已上传完成
+> （`registry.time` 与报错同一分钟），线上 `latest` 早已是 2.4.0。随后手动 `npm publish` 只得到
+> `E409 You cannot publish over the previously published versions`，这才暴露真相。
+>
+> **判据**：`npm view dsh-connect-trae versions` 里出现了 `X.Y.Z`，就是发布成功——无论终端里报了什么。
+> 反向也成立：只有 registry 上没有该版本，才算失败。凭据类错误（EOTP / E401 / 非交互 OTP）尤其容易
+> 出现在上传**之后**的响应处理阶段，不能当作否定证据。
 
 ### 8. 发布后一致性核验（推荐）
 
@@ -114,10 +133,49 @@ done
 
 全部 `✓` 即发布链自洽（本仓库构建为确定性构建，同一源码重复构建产出相同文件）。
 
+### 9. 创建 GitHub Release
+
+**每个发布版本都要有对应的 Release**（v2.0.6 起一直如此）。tag 只是 git 里的锚点，Release 才是用户在
+GitHub 上能看到的发布说明，也是仓库首页右侧的版本入口。
+
+在 <https://github.com/dingminhua/dsh-connect-trae/releases/new> 填写：
+
+| 字段 | 填什么 |
+| --- | --- |
+| **Choose a tag** | 选 `vX.Y.Z`（第 4 步已推送） |
+| **Release title** | `vX.Y.Z` |
+| **Describe this release** | 见下方正文来源 |
+| **draft / prerelease** | **都不勾**（与历史 Release 一致） |
+| **附件** | 不加（历史 Release 均为 0 附件；包在 npm） |
+
+**正文来源**：优先复用 `CHANGELOG.md` 的 `## X.Y.Z` 一节，改写成面向用户的措辞（可参考
+`docs/RELEASE_NOTES_v2.4.0.md` 的写法：开头一段说明「这个版本修了什么」，再分新增/修复/测试，
+末尾附 `v上一个版本...vX.Y.Z` 比较链接）。**正文必须与 CHANGELOG 的事实一致**，只是详略与语气不同。
+
+> ⚠️ **Release 在 tag 之后创建，不要在之前。** Release 需要一个已存在的 tag（或由它顺带创建，
+> 那就绕过了第 4 步「tag 指向版本提交」的约束）。先推 tag、再建 Release，两个锚点才指向同一提交。
+
+> ⚠️ **Release 正文里的版本号、测试数、模型名单等数字要核对，不要凭印象写。** 例如「全仓 N 例测试」
+> 取自 `pnpm run test` 的实际输出；README 里被移除的模型名要与当次实际生效的目录一致。
+
+> **tag 之后若还有提交**（例如发布后补的文档、CI 修复），tag **不需要**跟着移动——只要那些提交
+> 不影响发布产物即可（`docs/*.md` 不进包、`pnpm-workspace.yaml` 只影响本地与 CI 安装）。已推送的
+> tag 是历史锚点，见第 4 步的说明。创建 Release 前用下面这条确认 tag 指向的树确实是待发布版本：
+>
+> ```bash
+> git show vX.Y.Z:package.json | grep '"version"'   # 应显示 X.Y.Z
+> git diff --stat vX.Y.Z HEAD                        # 应只有不影响发布产物的文件
+> ```
+
 ## 常见问题
 
-- **`npm publish` 报 EOTP**：账号开启了 2FA，按第 6 步在浏览器确认，不要绕过。
-- **`npm publish` 报 E409 `Cannot publish over previously staged version`**：该版本号已被占（可能是同一次发布的重试，或编号被预占）。先用 `npm view dsh-connect-trae versions` 确认它是否已实际发布；若已发布则无需重发，若确未发布又无法复用编号，按第 2 步顺延到下一个版本号（参考 1.4.1→1.4.2 的编号顺延记录）。
+- **`npm publish` 报 EOTP**：账号开启了 2FA，按第 6 步在浏览器确认，不要绕过。**但先按第 7 步查一次
+  registry**——2.4.0 当天 EOTP 出现在上传完成之后，包实际已经发布出去了。
+- **`npm publish` 报 E409 `Cannot publish over previously published versions`**：该版本号在 registry 上已存在。
+  **先按第 7 步确认它是否已实际发布**——若是，说明包已经发出去了，**无需重发**（2.4.0 就是这样：
+  误判为「未发布」后重跑，只得到 E409，而线上 `latest` 早已是该版本，且两次的 shasum 完全一致）。
+  仅当确认它确实未发布、又无法复用编号时，才按第 2 步顺延到下一个版本号
+  （参考 1.4.1→1.4.2 的编号顺延记录）。
 - **忘了把 CHANGELOG 的标题日期定稿**：见第 4 步的说明——tag 已推送或包已发布时不要移动 tag，留给下个版本修正。
 - **发布后 `npm view ... version` 还是旧版本**：registry 缓存延迟，稍等重查 `npm view ... versions`。
 - **本地开发与发布的关系**：本地开发用 `link:` 安装，与 npm 发布互不影响；npm 发布的包是 `lib/`、README 等静态文件，同一份源码。
