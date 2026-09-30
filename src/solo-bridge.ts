@@ -1,13 +1,91 @@
 import { randomUUID } from 'node:crypto'
 import { SseDecoder, decodeTraeEvent } from './sse.ts'
 import type { TraeCatalog } from './catalog.ts'
-import type { TraeChatResult, TraeUpstreamClient } from './upstream.ts'
+import type { TraeChatResult, TraeUpstreamClient, TraeUpstreamErrorKind } from './upstream.ts'
 
 interface OpenAIToolCallDelta {
   index: number
   id?: string
   type?: 'function'
   function?: { name?: string; arguments?: string }
+}
+
+/**
+ * One upstream failure as Trae reports it inside a 200 SSE body: an `error`
+ * event, or any event carrying a `code` at or above Trae's error band.
+ */
+interface TraeFailure {
+  code?: number
+  message: string
+  extra?: unknown
+}
+
+/**
+ * What Trae's in-stream error codes mean. Measured 2026-10-01 on a live SG
+ * credential (issue #19), by sending the same body to several functions:
+ *
+ *  - `1005` — the model needs a paid plan. Trae answers HTTP 200 with
+ *    `event:error {"code":1005,"message":"","extra":"{\"plan\":1}"}`, so the
+ *    gate is only visible in `extra.plan`; `gpt-6-sol` returned it under both
+ *    `solo_work_remote` and `solo_agent_remote` on a free account.
+ *  - `4011` — the function the request named does not serve that model. Its
+ *    message claims "exceeded the rate limit", which is misleading: the same
+ *    model answers normally when sent under `solo_work_remote`.
+ *  - `4001` — `config_name` is not one this function serves.
+ */
+const TRAE_ERROR_HINTS: Readonly<Record<number, string>> = {
+  1005: 'Trae requires a paid plan for this model; the current account\'s plan does not cover it',
+  4001: 'Trae does not serve this model under the SOLO function the request used (config_name rejected)',
+  4011: 'Trae refused this model under the SOLO function the request used',
+}
+
+/** `extra` is a JSON *string* on the wire; unwrap it to read `plan`. */
+function traeErrorPlan(extra: unknown): number | undefined {
+  let value = extra
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value) as unknown } catch { return undefined }
+  }
+  if (typeof value !== 'object' || value === null) return undefined
+  const plan = (value as Record<string, unknown>)['plan']
+  return typeof plan === 'number' ? plan : undefined
+}
+
+/** A readable message for an in-stream Trae failure, with its code preserved. */
+export function describeTraeFailure(failure: TraeFailure): string {
+  const plan = traeErrorPlan(failure.extra)
+  const parts = [
+    failure.code === undefined ? 'Trae refused the request' : TRAE_ERROR_HINTS[failure.code] ?? 'Trae refused the request',
+    ...plan === undefined ? [] : [`plan ${plan}`],
+    ...failure.code === undefined ? [] : [`Trae code ${failure.code}`],
+  ]
+  const detail = failure.message.trim()
+  // Trae's own text is often a generic apology that contradicts the code, so it
+  // is appended as detail rather than used as the message.
+  return detail === '' ? parts.join(' · ') : `${parts.join(' · ')} · upstream: ${detail}`
+}
+
+/**
+ * HTTP status + error kind for an in-stream failure, so the loopback shim can
+ * answer with a real error instead of a truncated 200 stream.
+ *
+ * `1005` is a subscription gate: 402 is what makes clients stop rather than
+ * retry, and it is truthful. Everything else is a client-side rejection.
+ */
+function classifyTraeFailure(failure: TraeFailure): { status: number; kind: TraeUpstreamErrorKind } {
+  return failure.code === 1005 ? { status: 402, kind: 'hard_credit' } : { status: 400, kind: 'client' }
+}
+
+/** Recognise an in-stream failure event, or return undefined for anything else. */
+function traeFailureOf(decoded: ReturnType<typeof decodeTraeEvent>): TraeFailure | undefined {
+  if (decoded.type !== 'unknown') return undefined
+  const payload = decoded.data as Record<string, unknown> | undefined
+  const code = typeof payload?.['code'] === 'number' ? payload['code'] : undefined
+  if (decoded.event !== 'error' && !(code !== undefined && code >= 4000)) return undefined
+  return {
+    ...code === undefined ? {} : { code },
+    message: typeof payload?.['message'] === 'string' ? payload['message'] : '',
+    ...payload?.['extra'] === undefined ? {} : { extra: payload['extra'] },
+  }
 }
 
 function normalizeToolCalls(value: unknown): OpenAIToolCallDelta[] {
@@ -39,6 +117,11 @@ function normalizeToolCalls(value: unknown): OpenAIToolCallDelta[] {
 export function bridgeTraeSoloStream(response: Response, model: string): Response {
   const source = response.body
   if (source === null) return new Response(null, { status: 502 })
+  return bridgeTraeSource(source, model)
+}
+
+/** {@link bridgeTraeSoloStream} over an already-opened byte stream. */
+function bridgeTraeSource(source: ReadableStream<Uint8Array>, model: string): Response {
   const id = `chatcmpl-${randomUUID().replaceAll('-', '').slice(0, 24)}`
   const created = Math.floor(Date.now() / 1000)
   const decoder = new TextDecoder()
@@ -68,15 +151,16 @@ export function bridgeTraeSoloStream(response: Response, model: string): Respons
       const consume = (event: ReturnType<SseDecoder['push']>[number]): void => {
         const decoded = decodeTraeEvent(event)
         if (decoded.type === 'unknown') {
-          const payload = decoded.data as Record<string, unknown> | undefined
-          const code = typeof payload?.['code'] === 'number' ? payload['code'] : undefined
-          if (decoded.event === 'error' || (code !== undefined && code >= 4000)) {
+          const failure = traeFailureOf(decoded)
+          if (failure !== undefined) {
             // Trae surfaces quota/authorisation failures as an `error` event.
             // Surface it as a real upstream failure instead of letting DSH see
-            // a completed-but-empty response (EMPTY_RESPONSE).
-            upstreamError = new Error(typeof payload?.['message'] === 'string' && payload['message'] !== ''
-              ? payload['message']
-              : `Trae upstream error (code ${code ?? '?'})`)
+            // a completed-but-empty response (EMPTY_RESPONSE). Codes that arrive
+            // before any output are turned into a real HTTP error by
+            // {@link bridgeTraeSoloStreamOrFail}, which is the path the bridge
+            // actually uses; this arm only covers a failure that interrupts an
+            // already-streaming answer.
+            upstreamError = new Error(describeTraeFailure(failure))
           }
           return
         }
@@ -161,6 +245,105 @@ export function bridgeTraeSoloStream(response: Response, model: string): Respons
 }
 
 /**
+ * How far {@link openTraeSource} reads before giving up on finding a failure.
+ * Trae opens a real answer with small `metadata` / `timing_cost` events, so a
+ * healthy stream is recognised well inside these bounds; they exist only so a
+ * pathological stream cannot stall the response headers.
+ */
+const PEEK_MAX_CHUNKS = 64
+const PEEK_MAX_BYTES = 262_144
+
+/** Replay the bytes the peek consumed, then drain the rest of the upstream. */
+function replayTraeSource(
+  buffered: readonly Uint8Array[],
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ended: boolean,
+): ReadableStream<Uint8Array> {
+  let index = 0
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const chunk = buffered[index]
+      if (chunk !== undefined) {
+        index += 1
+        controller.enqueue(chunk)
+        return
+      }
+      if (ended) { controller.close(); return }
+      const next = await reader.read()
+      if (next.done) { controller.close(); return }
+      controller.enqueue(next.value)
+    },
+    async cancel(reason) { await reader.cancel(reason).catch(() => {}) },
+  })
+}
+
+/**
+ * Open the upstream answer, failing fast when Trae refuses BEFORE producing any
+ * output.
+ *
+ * This exists because Trae reports authorisation and subscription failures
+ * inside a **200** SSE body. Relaying that as a 200 and aborting mid-stream
+ * (what this bridge used to do) loses the code at the HTTP boundary: pi-ai only
+ * sees a truncated stream and reports `Stream ended without finish_reason`,
+ * which reads as a network fault and is retried five times — the exact symptom
+ * in issue #19. Peeking until the first real output lets a refusal become a
+ * normal error response with its code and plan intact.
+ *
+ * The peek is limited to the head of the stream and replayed verbatim, so a
+ * healthy answer keeps streaming with no buffering beyond the first event.
+ */
+async function openTraeSource(response: Response): Promise<
+  { ok: true; source: ReadableStream<Uint8Array> } | { ok: false; status: number; kind: TraeUpstreamErrorKind; message: string }
+> {
+  const body = response.body
+  if (body === null) return { ok: false, status: 502, kind: 'server', message: 'Trae upstream returned no response body' }
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  const sse = new SseDecoder()
+  const buffered: Uint8Array[] = []
+  let bytes = 0
+  let ended = false
+  try {
+    while (buffered.length < PEEK_MAX_CHUNKS && bytes < PEEK_MAX_BYTES) {
+      const next = await reader.read()
+      if (next.done) { ended = true; break }
+      buffered.push(next.value)
+      bytes += next.value.byteLength
+      let answered = false
+      for (const event of sse.push(decoder.decode(next.value, { stream: true }))) {
+        const decoded = decodeTraeEvent(event)
+        const failure = traeFailureOf(decoded)
+        if (failure !== undefined) {
+          await reader.cancel().catch(() => {})
+          return { ok: false, ...classifyTraeFailure(failure), message: describeTraeFailure(failure) }
+        }
+        // Anything Trae itself recognises (`delta`, `usage`, `queue`,
+        // `progress`, `done`) means it accepted the request; stop peeking and
+        // stream from here.
+        if (decoded.type !== 'unknown') answered = true
+      }
+      if (answered) break
+    }
+  } catch (error) {
+    reader.releaseLock()
+    return { ok: false, status: 0, kind: 'server', message: `transport error: ${String(error)}` }
+  }
+  return { ok: true, source: replayTraeSource(buffered, reader, ended) }
+}
+
+/**
+ * Bridge an upstream answer, turning an early refusal into a real error result.
+ *
+ * The sibling {@link bridgeTraeSoloStream} stays synchronous and always answers
+ * 200; it is the primitive, and this is the policy the bridge class uses.
+ */
+export async function bridgeTraeSoloStreamOrFail(response: Response, model: string): Promise<TraeChatResult> {
+  const opened = await openTraeSource(response)
+  if (!opened.ok) return opened
+  return { ok: true, response: bridgeTraeSource(opened.source, model) }
+}
+
+/**
  * One resolved wire target: the `config_name` `llm_utils_chat` accepts, plus
  * the directory function that listed it. Trae's roster is split across several
  * SOLO-mode functions and a model is only callable through the one listing it
@@ -235,6 +418,6 @@ export class TraeSoloBridge implements TraeUpstreamClient {
     }
     const result = await this.upstream.chatStream(prepared, signal)
     if (!result.ok) return result
-    return { ok: true, response: bridgeTraeSoloStream(result.response, model) }
+    return await bridgeTraeSoloStreamOrFail(result.response, model)
   }
 }

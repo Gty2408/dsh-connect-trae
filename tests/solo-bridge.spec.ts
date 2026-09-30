@@ -1,9 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import { bridgeTraeSoloStream, TraeSoloBridge } from '../src/solo-bridge.ts'
+import { bridgeTraeSoloStream, bridgeTraeSoloStreamOrFail, describeTraeFailure, TraeSoloBridge } from '../src/solo-bridge.ts'
 import type { TraeUpstreamClient } from '../src/upstream.ts'
 
 function traeStream(events: string[]): Response {
   return new Response(events.join(''), { headers: { 'content-type': 'text/event-stream' } })
+}
+
+/**
+ * A Trae SSE body that arrives in SEPARATE network chunks. Needed where the
+ * test depends on the peek seeing one event before another: a single `Response`
+ * string is delivered as one chunk, so everything in it is decoded together.
+ */
+function traeStreamChunks(chunks: string[]): Response {
+  const encoder = new TextEncoder()
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+      controller.close()
+    },
+  })
+  return new Response(body, { headers: { 'content-type': 'text/event-stream' } })
 }
 
 describe('TraeSoloBridge', () => {
@@ -224,5 +240,136 @@ describe('TraeSoloBridge', () => {
     const text = await result.response.text()
     expect(text).toContain('"prompt_tokens":10')
     expect(text).not.toContain('prompt_tokens_details')
+  })
+})
+
+// Issue #19: Trae reports subscription and function-ownership refusals INSIDE a
+// 200 SSE body as `event: error`. Relaying that as 200 and aborting mid-stream
+// lost the code at the HTTP boundary — pi-ai only saw a truncated stream and
+// reported `Stream ended without finish_reason`, which reads as a network
+// fault and gets retried five times. The shapes below are the ones measured
+// live on the SG gateway (docs/ISSUE19_DIAGNOSIS.md): `extra` is a JSON
+// *string* on the wire, and 4011's own message claims a rate limit that it is
+// not.
+describe('describeTraeFailure: readable in-stream failure text (issue #19)', () => {
+  it('keeps the subscription gate readable: 1005 names the plan and the code', () => {
+    expect(describeTraeFailure({ code: 1005, message: '', extra: '{"plan":4}' }))
+      .toBe("Trae requires a paid plan for this model; the current account's plan does not cover it · plan 4 · Trae code 1005")
+  })
+
+  it('reads the plan from an already-unwrapped extra object too', () => {
+    expect(describeTraeFailure({ code: 1005, message: '', extra: { plan: 1 } })).toContain('plan 1')
+  })
+
+  it('uses the 4011 hint and demotes the misleading rate-limit text to detail', () => {
+    const message = describeTraeFailure({ code: 4011, message: 'exceeded the rate limit' })
+    expect(message).toContain('refused this model under the SOLO function the request used')
+    expect(message).toContain('Trae code 4011')
+    expect(message.endsWith('upstream: exceeded the rate limit')).toBe(true)
+  })
+
+  it('falls back to a generic refusal for an unmeasured code, still naming it', () => {
+    expect(describeTraeFailure({ code: 4008, message: 'quota exceeded' }))
+      .toBe('Trae refused the request · Trae code 4008 · upstream: quota exceeded')
+  })
+
+  it('describes a codeless error event without inventing a code suffix', () => {
+    expect(describeTraeFailure({ message: 'gone away' }))
+      .toBe('Trae refused the request · upstream: gone away')
+  })
+})
+
+describe('bridgeTraeSoloStreamOrFail: an early refusal becomes a real error result (issue #19)', () => {
+  it('turns a 1005 subscription gate inside a 200 body into a 402 hard_credit', async () => {
+    const result = await bridgeTraeSoloStreamOrFail(traeStream([
+      'event: error\ndata: {"code":1005,"message":"","extra":"{\\"plan\\":4}"}\n\n',
+      'event: done\ndata: {"finish_reason":"stop"}\n\n',
+    ]), 'gpt-6-sol')
+    expect(result).toEqual({
+      ok: false,
+      status: 402,
+      kind: 'hard_credit',
+      message: "Trae requires a paid plan for this model; the current account's plan does not cover it · plan 4 · Trae code 1005",
+    })
+  })
+
+  it('maps a 4011 function-ownership refusal to a client error with its code', async () => {
+    const result = await bridgeTraeSoloStreamOrFail(traeStream([
+      'event: error\ndata: {"code":4011,"message":"exceeded the rate limit"}\n\n',
+      'event: done\ndata: {"finish_reason":"stop"}\n\n',
+    ]), 'gpt-5.4')
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      kind: 'client',
+      message: 'Trae refused this model under the SOLO function the request used · Trae code 4011 · upstream: exceeded the rate limit',
+    })
+  })
+
+  it('recognises a failure hidden in an unnamed event via the error code band', async () => {
+    const result = await bridgeTraeSoloStreamOrFail(traeStream([
+      'data: {"code":4008,"message":"quota exceeded"}\n\n',
+      'event: done\ndata: {"finish_reason":"stop"}\n\n',
+    ]), 'glm-5.2')
+    expect(result).toEqual({
+      ok: false,
+      status: 400,
+      kind: 'client',
+      message: 'Trae refused the request · Trae code 4008 · upstream: quota exceeded',
+    })
+  })
+
+  it('streams a healthy answer through untouched, replaying the peeked head verbatim', async () => {
+    const result = await bridgeTraeSoloStreamOrFail(traeStream([
+      'event: request_wait_in_queue\ndata: {"position":1}\n\n',
+      'event: output\ndata: {"response":"hello"}\n\n',
+      'event: done\ndata: {"finish_reason":"stop"}\n\n',
+    ]), 'glm-5.2')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const text = await result.response.text()
+    expect(text).toContain('"content":"hello"')
+    expect(text).toContain('"finish_reason":"stop"')
+    expect(text).toContain('data: [DONE]')
+  })
+
+  it('errors mid-stream with the readable message when output came first', async () => {
+    // The refusal must arrive in a LATER network chunk than the first output,
+    // or the peek itself resolves the stream to an error result.
+    const result = await bridgeTraeSoloStreamOrFail(traeStreamChunks([
+      'event: output\ndata: {"response":"partial"}\n\n',
+      'event: error\ndata: {"code":1005,"message":"","extra":"{\\"plan\\":4}"}\n\n'
+        + 'event: done\ndata: {"finish_reason":"stop"}\n\n',
+    ]), 'gpt-6-sol')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    const reader = result.response.body!.getReader()
+    const first = await reader.read()
+    expect(first.done).toBe(false)
+    expect(new TextDecoder().decode(first.value)).toContain('"content":"partial"')
+    // The stream dies with the translated refusal, not a bare "truncated" error.
+    await expect(reader.read()).rejects.toThrow('Trae code 1005')
+  })
+})
+
+describe('TraeSoloBridge against the issue #19 refusal', () => {
+  it('surfaces the subscription gate as an error result instead of a truncated 200 stream', async () => {
+    const upstream: TraeUpstreamClient = {
+      async chatStream() {
+        return { ok: true, response: traeStream([
+          'event: error\ndata: {"code":1005,"message":"","extra":"{\\"plan\\":4}"}\n\n',
+          'event: done\ndata: {"finish_reason":"stop"}\n\n',
+        ]) }
+      },
+    }
+    const result = await new TraeSoloBridge(upstream).chatStream(JSON.stringify({
+      model: 'gpt-6-sol', messages: [{ role: 'user', content: 'hi' }],
+    }))
+    expect(result).toEqual({
+      ok: false,
+      status: 402,
+      kind: 'hard_credit',
+      message: "Trae requires a paid plan for this model; the current account's plan does not cover it · plan 4 · Trae code 1005",
+    })
   })
 })
