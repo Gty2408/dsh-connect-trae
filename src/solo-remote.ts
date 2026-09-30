@@ -4,6 +4,35 @@ import { REGION_GATEWAYS, regionOfCredential, type TraeRegion } from './region.t
 
 export const TRAE_SOLO_REMOTE_BASE = 'https://solo.trae.cn/api/remote/v1'
 
+/**
+ * Remote-directory functions to ask for, per region.
+ *
+ * The remote `/models` answer is **grouped by function** and the groups are not
+ * interchangeable (measured 2026-10-01, issue #19):
+ *
+ * ```
+ * solo_agent        : 19 models   ← superset; also the ONLY source of
+ *                                   gpt-6-astra / gpt-5.6-sol|terra|luna /
+ *                                   glm-5.2 / gpt-5.5 / Seed-2.1-Turbo
+ * solo_agent_remote : 10 models   ← what this client used to read, and all it
+ *                                   read: the preferred group only
+ * ```
+ *
+ * `solo_agent` ⊇ `solo_agent_remote`, so reading just the latter hid nine
+ * models that the Trae IDE does show — exactly what the reporter saw. Both
+ * groups are therefore requested, and every returned group is unioned.
+ *
+ * Asking for a function the gateway does not serve is harmless: unknown names
+ * are ignored rather than rejected (`solo_work_lite` returns no group, and the
+ * request still answers HTTP 200). The CN list is left as it was — the CN
+ * rosters were not re-measured here, and the union keeps whichever groups come
+ * back.
+ */
+export const TRAE_REMOTE_DIRECTORY_FUNCTIONS: Readonly<Record<TraeRegion, readonly string[]>> = {
+  cn: ['solo_agent_remote', 'solo_work_remote'],
+  ai: ['solo_agent', 'solo_agent_remote', 'solo_work_remote'],
+}
+
 export interface TraeSoloRemoteCatalogOptions {
   credential(): Promise<TraeCredential>
   fetchImpl?: typeof fetch
@@ -59,18 +88,29 @@ export class TraeSoloRemoteCatalogClient {
     const region = regionOfCredential(credential)
     const base = this.baseUrl ?? REGION_GATEWAYS[region].remote
     const headers = await this.headers(region)
-    const response = await this.fetchImpl(`${base}/models?functions=solo_agent_remote,solo_work_remote`, { headers, signal: signal ?? AbortSignal.timeout(30_000) })
+    const functions = TRAE_REMOTE_DIRECTORY_FUNCTIONS[region].join(',')
+    const response = await this.fetchImpl(`${base}/models?functions=${functions}`, { headers, signal: signal ?? AbortSignal.timeout(30_000) })
     if (!response.ok) throw new Error(`SOLO remote models returned HTTP ${response.status}`)
     const json = await response.json() as { code?: number; data?: { list?: { function?: string; models?: unknown[] }[] } }
     const groups = json.data?.list ?? []
-    const preferred = groups.find(group => group.function === 'solo_agent_remote') ?? groups[0]
+    // Union EVERY group, not just the preferred one. Each group is a roster the
+    // gateway is willing to serve; a model listed by any of them is a model the
+    // IDE can offer, and the wire join downstream (see mergeTraeModelSources)
+    // is what decides whether it is actually callable. Restricting this to
+    // `solo_agent_remote` dropped the nine models issue #19 was opened about.
+    //
+    // First listing wins so a model present in several groups is emitted once,
+    // keeping the gateway's own group order (solo_agent_remote first in the ai
+    // answer) stable for rows that appear in both.
     const seen = new Set<string>()
     const models: TraeDiscoveredModel[] = []
-    for (const raw of preferred?.models ?? []) {
-      const model = parseTraeRemoteModel(raw)
-      if (model === undefined || seen.has(model.id)) continue
-      seen.add(model.id)
-      models.push(model)
+    for (const group of groups) {
+      for (const raw of group.models ?? []) {
+        const model = parseTraeRemoteModel(raw)
+        if (model === undefined || seen.has(model.id)) continue
+        seen.add(model.id)
+        models.push(model)
+      }
     }
     if (models.length === 0) throw new Error('SOLO remote models response contained no models')
     return models

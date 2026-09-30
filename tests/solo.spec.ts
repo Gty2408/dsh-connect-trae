@@ -200,8 +200,8 @@ describe('region-scoped model directory function', () => {
     expiresAtMs: Date.now() + 1000, edition: 'solo-sg', source: 'desktop',
   }
 
-  it('asks the ai gateway for the solo_agent directory', async () => {
-    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => new Response(JSON.stringify({ config_info_list: [
+  it('asks the ai gateway for chat-callable functions only, never solo_agent', async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ config_info_list: [
       { config_name: 'minimax-m3', display_config: { display_name: 'MiniMax-M3' }, model_detail_list: [{ prompt_max_tokens: 200000, max_tokens: 32000 }] },
     ] }), { status: 200 }))
     const client = new TraeSoloUpstreamClient({
@@ -210,10 +210,15 @@ describe('region-scoped model directory function', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     })
     await client.fetchModels()
-    const body = JSON.parse((fetchImpl.mock.calls[0]?.[1] as RequestInit).body as string)
-    // The ai directory must come from solo_agent: solo_work_lite omits four of
-    // the seven remote-roster models on the international gateway.
-    expect(body['function']).toBe('solo_agent')
+    const functions = fetchImpl.mock.calls.map(call => JSON.parse((call[1] as RequestInit).body as string)['function'])
+    // Issue #19, measured 2026-10-01 on a live SG credential: get_detail_param
+    // happily answers `solo_agent` with a 43-entry roster, but llm_utils_chat
+    // rejects every model sent under it with `code 4011`. Since precedence here
+    // is what the chat call replays, asking it made 8 of the 10 exposed
+    // ai-region models uncallable. `solo_agent_remote` is the callable half
+    // (it serves minimax-m3 / gemini-3.1-pro, which no solo_work_* lists).
+    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote'])
+    expect(functions).not.toContain('solo_agent')
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/ide/v1/get_detail_param')
   })
 
@@ -280,12 +285,16 @@ describe('multi-function directory union (glm-5.3 regression, issue #7)', () => 
     await expect(client.fetchModels()).resolves.toMatchObject([{ id: 'glm-5.2', function: 'solo_work_lite' }])
   })
 
-  it('the ai region asks solo_agent first', async () => {
+  it('the ai region asks the two IDE functions before the Remote one', async () => {
     const fetchImpl = stubDirectory()
     const client = new TraeSoloUpstreamClient({ credential: async () => intlCredentialSg, identity: async () => identity, fetchImpl: fetchImpl as unknown as typeof fetch })
     await client.fetchModels()
     const functions = fetchImpl.mock.calls.map(call => JSON.parse((call[1] as RequestInit).body as string)['function'])
-    expect(functions).toEqual(['solo_agent', 'solo_work_remote', 'solo_work_lite'])
+    // Scope is what the chat call replays, so `solo_agent` (a roster function
+    // that answers 4011 for every model) must not appear at all, and
+    // `solo_agent_remote` comes last so a config two functions list keeps the
+    // IDE function that serves it without the Remote plan gate.
+    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote'])
   })
 
   it('an explicit body function wins over the default chat function', () => {

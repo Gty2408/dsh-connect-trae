@@ -5,7 +5,7 @@ import type { TraeCredential } from '../src/auth.ts'
 const credential: TraeCredential = { accessToken: 'token', userId: 'uid', host: 'https://host', expiresAtMs: Date.now() + 1000, edition: 'solo', source: 'desktop' }
 
 describe('TraeSoloRemoteCatalogClient', () => {
-  it('parses model capabilities from the preferred solo_agent_remote group', async () => {
+  it('parses model capabilities and unions every advertised group', async () => {
     const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ code: 0, data: { list: [
       { function: 'solo_agent_remote', models: [{
         name: 'qwen3.8-max', display_name: 'Qwen3.8-Max', multimodal: true, max_mode: true,
@@ -13,16 +13,36 @@ describe('TraeSoloRemoteCatalogClient', () => {
         reasoning_effort_config: { support_thinking: true, options: ['light', 'high', 'extra_high'], default_level: 'high' },
         features: JSON.stringify({ consumption_rate: { enable: true, data: { rate: 1.5 } }, reasoning: { enable: true } }),
       }] },
+      { function: 'solo_agent', models: [{ name: 'gpt-5.6-sol', display_name: 'GPT-5.6-Sol' }] },
       { function: 'solo_work_remote', models: [{ name: 'ignored' }] },
     ] } }), { status: 200 }))
     const client = new TraeSoloRemoteCatalogClient({ credential: async () => credential, fetchImpl: fetchImpl as unknown as typeof fetch })
-    await expect(client.fetchModels()).resolves.toEqual([{
+    const models = await client.fetchModels()
+    expect(models[0]).toEqual({
       id: 'qwen3.8-max', name: 'Qwen3.8-Max', multimodal: true,
       contextWindow: 200000, maxContextWindow: 1000000, creditMultiplier: 1.5,
       reasoningSupported: true,
       reasoning: { supported: ['low', 'high', 'xhigh'], defaultEffort: 'high' },
-    }])
+    })
+    // Every group is read, not just the preferred one (issue #19): `solo_agent`
+    // is where gpt-5.6-* / gpt-6-astra / glm-5.2 live. Rows are passed through
+    // as-is — callability is decided by the wire join in mergeTraeModelSources,
+    // never here.
+    expect(models.map(model => model.id)).toEqual(['qwen3.8-max', 'gpt-5.6-sol', 'ignored'])
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://solo.trae.cn/api/remote/v1/models?functions=solo_agent_remote,solo_work_remote')
+  })
+
+  it('emits a model listed by two groups only once', async () => {
+    const shared = { name: 'gpt-5.4', display_name: 'GPT-5.4' }
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ code: 0, data: { list: [
+      { function: 'solo_agent_remote', models: [shared] },
+      { function: 'solo_agent', models: [shared, { name: 'gpt-6-astra', display_name: 'GPT-6-Astra' }] },
+    ] } }), { status: 200 }))
+    const client = new TraeSoloRemoteCatalogClient({ credential: async () => credential, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.fetchModels()).resolves.toMatchObject([
+      { id: 'gpt-5.4', name: 'GPT-5.4' },
+      { id: 'gpt-6-astra', name: 'GPT-6-Astra' },
+    ])
   })
 
   it('fails clearly when the catalog response contains no usable models', async () => {
@@ -48,7 +68,7 @@ describe('region-scoped directory gateway', () => {
     ] } }), { status: 200 }))
     const client = new TraeSoloRemoteCatalogClient({ credential: async () => intlCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.fetchModels()).resolves.toHaveLength(1)
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent_remote,solo_work_remote')
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote')
     const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>
     expect(headers['Referer']).toBe('https://coresg-normal.trae.ai/')
     expect(headers['x-preferenced-language']).toBe('en')

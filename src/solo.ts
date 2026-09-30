@@ -8,7 +8,7 @@ import type { TraeChatResult, TraeUpstreamErrorKind } from './upstream.ts'
 export const TRAE_SOLO_FUNCTION = 'solo_work_lite'
 
 /**
- * Directory functions to union per region, in priority order.
+ * `llm_utils_chat` functions to union per region, in priority order.
  *
  * Trae spreads its callable roster across several SOLO-mode functions, and a
  * model is only usable through the one that lists it: `glm-5.3` is absent from
@@ -16,11 +16,29 @@ export const TRAE_SOLO_FUNCTION = 'solo_work_lite'
  * calling it through the former answers `4001 param is invalid`, through the
  * latter streams normally). Rather than betting on a single function, the
  * directory unions them; the first function to provide a config wins, so the
- * order below decides which wire name a model is called with.
+ * order below decides which wire name AND which function a model is called with.
+ *
+ * THIS LIST IS NOT "directory functions" — it is the set of functions
+ * `llm_utils_chat` actually accepts, because ownership here is what the chat
+ * call replays. `solo_agent` is deliberately ABSENT (measured 2026-10-01 on a
+ * live SG credential, issue #19): it is a Remote-agent roster function, not a
+ * chat function. Every model sent with `function: "solo_agent"` — `gpt-5.4`,
+ * `gpt-5.6-sol`, `gpt-6-astra`, `glm-5.2`, `kimi-k2.7-code` — answered
+ * `event:error {"code":4011}` (message says "rate limit", it is really "not
+ * served here"), while the same model with the same body answered normally
+ * under `solo_work_remote` / `solo_work_lite` / `solo_agent_remote`.
+ *
+ * Note `get_detail_param` DOES answer `solo_agent` with a 43-entry list, so
+ * asking it looks helpful while making 8 of the 10 exposed ai-region models
+ * uncallable: it won precedence and stamped its own name onto configs it
+ * cannot serve. `solo_agent_remote` is the chat-callable half of that roster
+ * (it answers `minimax-m3`, `gemini-3.1-pro`, … that no `solo_work_*` lists)
+ * and therefore takes the last slot — after the two IDE functions that serve
+ * their shared configs without the Remote plan gate.
  */
 export const TRAE_DIRECTORY_FUNCTIONS: Readonly<Record<TraeRegion, readonly string[]>> = {
   cn: ['solo_work_remote', TRAE_SOLO_FUNCTION],
-  ai: ['solo_agent', 'solo_work_remote', TRAE_SOLO_FUNCTION],
+  ai: ['solo_work_remote', TRAE_SOLO_FUNCTION, 'solo_agent_remote'],
 }
 export const TRAE_SOLO_CHAT_PATH = '/api/agent/v3/llm_utils_chat'
 export const TRAE_SOLO_MODELS_PATH = '/api/ide/v1/get_detail_param'
