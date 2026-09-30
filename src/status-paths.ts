@@ -309,7 +309,27 @@ export interface TraeWebPayStatus {
   enableSoloBuilder: boolean
   enableSoloCoder: boolean
   enableSoloWeb: boolean
+  /** Trae's authoritative tier number (`user_pay_identity`); `0` means Free. */
+  payIdentity?: number
+  /** Trae's authoritative tier label (`user_pay_identity_str`), e.g. `Free`. */
+  payIdentityStr?: string
   fission?: { startTimeMs: number; expireTimeMs: number; maxUsage: number }
+}
+
+/**
+ * Whether Trae's plan identity says this account is on a paying plan.
+ *
+ * `has_package` alone is NOT that question — it reports whether a package
+ * entitlement row exists, and a member can be on a plan without one (issue
+ * #19: a Pro account rendered as "No active package"). Trae spells the plan in
+ * `user_pay_identity_str`, so this reads that field, and only the exact word
+ * `Free` counts as free: an unknown or future tier name is treated as paid,
+ * because claiming "Free" for a tier we simply do not recognise is the more
+ * damaging of the two errors.
+ */
+export function traePlanIsPaid(payIdentityStr: string | undefined): boolean {
+  const tier = payIdentityStr?.trim()
+  return tier !== undefined && tier !== '' && !/^free$/i.test(tier)
 }
 
 /** The JSON document the plugin card renders. */

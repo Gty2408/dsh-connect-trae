@@ -52,6 +52,19 @@ export interface TraePayStatus {
   enableSoloBuilder: boolean
   enableSoloCoder: boolean
   enableSoloWeb: boolean
+  /**
+   * The account's plan identity (`user_pay_identity`), Trae's authoritative
+   * tier number: `0` is Free. Measured 2026-10-01 on a live SG community
+   * account, which reported `0` / `"Free"`.
+   *
+   * This is a DIFFERENT question from {@link hasPackage}, which asks whether a
+   * package/entitlement object exists. A paying member can hold a plan
+   * identity without any package row, which is why issue #19 saw "No active
+   * package" on a Pro account — the card only ever read `has_package`.
+   */
+  payIdentity?: number
+  /** The plan identity as Trae spells it (`user_pay_identity_str`), e.g. `Free`. */
+  payIdentityStr?: string
   /** The fission (referral) program window and cap, when exposed. */
   fission?: { startTimeMs: number; expireTimeMs: number; maxUsage: number }
 }
@@ -285,6 +298,10 @@ export class TraeUsageClient {
     const fissionStart = asNumber(payload['solo_fission_start_time'])
     const fissionExpire = asNumber(payload['solo_fission_expire_time'])
     const fissionMax = asNumber(payload['solo_fission_max_usage'])
+    const payIdentity = asNumber(payload['user_pay_identity'])
+    const payIdentityStr = typeof payload['user_pay_identity_str'] === 'string' && payload['user_pay_identity_str'].trim() !== ''
+      ? payload['user_pay_identity_str'].trim()
+      : undefined
     return {
       isDollarUsageBilling: flag('is_dollar_usage_billing'),
       hasPackage: flag('has_package'),
@@ -295,6 +312,8 @@ export class TraeUsageClient {
       enableSoloBuilder: flag('enable_solo_builder'),
       enableSoloCoder: flag('enable_solo_coder'),
       enableSoloWeb: flag('enable_solo_web'),
+      ...payIdentity === undefined ? {} : { payIdentity },
+      ...payIdentityStr === undefined ? {} : { payIdentityStr },
       ...fissionStart === undefined || fissionExpire === undefined || fissionMax === undefined ? {} : {
         fission: { startTimeMs: fissionStart, expireTimeMs: fissionExpire, maxUsage: fissionMax },
       },

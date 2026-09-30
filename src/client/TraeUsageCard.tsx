@@ -16,10 +16,11 @@ import {
   TRAE_MODELS_REFRESH_PATH,
   TRAE_REGIONS,
   TRAE_USAGE_PATH,
+  traePlanIsPaid,
   unwrapVolatileDeep,
   withTraeRegion,
 } from '../status-paths.ts'
-import type { TraeWebCheckinClaim, TraeWebModel, TraeWebUsage } from '../status-paths.ts'
+import type { TraeWebCheckinClaim, TraeWebModel, TraeWebPayStatus, TraeWebUsage } from '../status-paths.ts'
 import type { TraeRegion } from '../region.ts'
 import { TRAE_PLUGIN_ICON } from './icon.ts'
 import { TRAE_CARD_CSS } from './styles.ts'
@@ -154,6 +155,25 @@ function formatCapacity(value: number | undefined, unknown: string): string {
   if (value >= 1_000_000 && value % 1_000_000 === 0) return `${value / 1_000_000}M`
   if (value >= 1_000 && value % 1_000 === 0) return `${value / 1_000}K`
   return formatNumber(value)
+}
+
+/**
+ * The subscription row's verdict.
+ *
+ * Two independent things can entitle an international account: a package row
+ * (`has_package`) and a plan identity (`user_pay_identity_str`). Reading only
+ * the first is what rendered a Pro member as "No active package" in issue #19,
+ * so either one counts. The tier string is carried separately so the row can
+ * name the plan instead of just asserting a boolean.
+ */
+function payVerdict(payStatus: TraeWebPayStatus): { paid: boolean; tier?: string; label: 'row.subscribed' | 'row.noPackage' } {
+  const tier = payStatus.payIdentityStr?.trim()
+  const paid = payStatus.hasPackage || traePlanIsPaid(payStatus.payIdentityStr)
+  return {
+    paid,
+    ...tier === undefined || tier === '' ? {} : { tier },
+    label: paid ? 'row.subscribed' : 'row.noPackage',
+  }
 }
 
 function dotStyle(status: TraeWebUsage['status']): Record<string, string> {
@@ -512,6 +532,8 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
    * message — it never sends one by itself.
    */
   const rowImageIsAutomatic = (model: TraeWebModel): boolean => model.multimodal === true
+  /** The subscription row's verdict for the current account, when it has one. */
+  const payPlan = status.status === 'signed-in' && status.payStatus !== undefined ? payVerdict(status.payStatus) : undefined
   const activeContextBudgets = draft?.contextBudgets ?? savedContextBudgets
   const dirty = draft !== undefined
 
@@ -721,20 +743,24 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
                 : null}
               {status.status === 'signed-in'
                 ? <>
-                    {status.payStatus === undefined ? null : (
+                    {status.payStatus === undefined || payPlan === undefined ? null : (
                       <div className="dsm-trae-usage-list">
                         <div className="dsm-trae-usage-stats dsm-trae-usage-stats-two">
                           <div className="dsm-trae-usage-stat dsm-trae-usage-stat-general">
                             <div className="dsm-trae-usage-stat-head">
                               <span className="dsm-trae-usage-stat-label">{t('row.subscriptionLabel')}</span>
-                              <span className={`dsm-trae-usage-stat-badge ${status.payStatus.hasPackage ? 'dsm-trae-usage-stat-badge-on' : 'dsm-trae-usage-stat-badge-off'}`}>
-                                {t(status.payStatus.hasPackage ? 'row.subscribed' : 'row.noPackage')}
+                              <span className={`dsm-trae-usage-stat-badge ${payPlan.paid ? 'dsm-trae-usage-stat-badge-on' : 'dsm-trae-usage-stat-badge-off'}`}>
+                                {t(payPlan.label)}
                               </span>
                             </div>
                             <span className="dsm-trae-usage-stat-value dsm-trae-usage-stat-value-general">
                               {status.payStatus.inTrial && status.payStatus.trialEndTimeMs > 0
                                 ? t('row.trialUntil', { date: formatDateTime(status.payStatus.trialEndTimeMs) })
-                                : t(status.payStatus.hasPackage ? 'row.subscribed' : 'row.noPackage')}
+                                // Name the plan Trae reports rather than restating the
+                                // boolean: "No active package · Free" tells a user why
+                                // the row is off, and "Active package · Pro" is what a
+                                // member should see (issue #19).
+                                : [t(payPlan.label), payPlan.tier].filter(Boolean).join(' · ')}
                             </span>
                             <span className="dsm-trae-usage-stat-hint">
                               {status.payStatus.enableSoloLite || status.payStatus.enableSoloCoder || status.payStatus.enableSoloBuilder || status.payStatus.enableSoloWeb

@@ -234,6 +234,7 @@ describe('region-scoped usage surface', () => {
         trial_status: { is_in_trial: true, trial_end_time: 1789000000000 },
         enable_solo_lite: true, enable_solo_builder: false, enable_solo_coder: true, enable_solo_web: false,
         solo_fission_start_time: 1755000000000, solo_fission_expire_time: 1798000000000, solo_fission_max_usage: 30,
+        user_pay_identity: 5, user_pay_identity_str: 'Pro',
       }), { status: 200 })
     }
     const client = new TraeUsageClient({ credential: async () => intlCredential, fetchImpl })
@@ -245,7 +246,34 @@ describe('region-scoped usage surface', () => {
       inTrial: true, trialEndTimeMs: 1789000000000,
       enableSoloLite: true, enableSoloBuilder: false, enableSoloCoder: true, enableSoloWeb: false,
       fission: { startTimeMs: 1755000000000, expireTimeMs: 1798000000000, maxUsage: 30 },
+      payIdentity: 5, payIdentityStr: 'Pro',
     })
+  })
+
+  // Issue #19: the authoritative tier lives in `user_pay_identity` /
+  // `user_pay_identity_str`, which this client used to drop entirely. A member
+  // on a plan whose package row is absent rendered as "No active package".
+  it('preserves the plan identity separately from has_package', async () => {
+    const payload = {
+      has_package: false, is_dollar_usage_billing: true,
+      user_pay_identity: 0, user_pay_identity_str: 'Free',
+    }
+    const client = new TraeUsageClient({
+      credential: async () => intlCredential,
+      fetchImpl: async () => new Response(JSON.stringify(payload), { status: 200 }),
+    })
+    expect(await client.payStatus()).toMatchObject({ hasPackage: false, payIdentity: 0, payIdentityStr: 'Free' })
+  })
+
+  it('omits the plan identity when the upstream does not carry it', async () => {
+    const client = new TraeUsageClient({
+      credential: async () => intlCredential,
+      fetchImpl: async () => new Response(JSON.stringify({ has_package: true, user_pay_identity_str: '   ' }), { status: 200 }),
+    })
+    const status = await client.payStatus()
+    expect(status.hasPackage).toBe(true)
+    expect(status.payIdentity).toBeUndefined()
+    expect(status.payIdentityStr).toBeUndefined()
   })
 
   it('guards the CN-only Work-credit methods with a diagnosable error on ai', async () => {
