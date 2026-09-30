@@ -1,5 +1,46 @@
 # Changelog
 
+## 2.5.0 (2026-10-01)
+
+> **国际版（AI 区域）三条用户可见故障的修复**，全部来自 [issue #19](https://github.com/dingminhua/dsh-connect-trae/issues/19) 的报告与
+> 在真实 SG 凭据上的逐条实测（取证过程见 `docs/ISSUE19_DIAGNOSIS.md`，档位接口探索见 `docs/INTL_PAID_TIER_PROBE.md`）。
+
+### Features
+
+- **国际版模型目录改为读取全部组并集——此前只读 `solo_agent_remote` 一个组，另外 9 个模型从未出现**（issue #19 症状一）：
+  - Trae 的 remote `/models` 答复**按 function 分组**，且组间不是互替关系：实测 `solo_agent` 组 19 个模型、`solo_agent_remote` 组 10 个。旧代码请求 `solo_agent_remote,solo_work_remote` 后**只遍历 preferred 一个组**，报告人 Trae IDE 里能看到、插件里却没有的 `GPT-6-Astra`、`GPT-5.6-Sol/Terra/Luna`、`GPT-5.5`、`GLM-5.2` 等**恰好全部在没读的 `solo_agent` 组里**。
+  - 现在 `TRAE_REMOTE_DIRECTORY_FUNCTIONS` 按区域声明要请求的组（AI 区域三个全取），**每个返回的组都并入目录**，同一模型先出现者胜、只发一次。请求一个网关不认识的组是无害的（未知组名被忽略而非拒绝）。
+  - **发现面变宽，调用面反而收窄**：目录 union 让模型「可见」，但模型**只能通过列出它的那个 function 调用**。实测 `get_detail_param` 对 `solo_agent` 有求必应地返回 43 条，而 `llm_utils_chat` 对**所有**以 `function: "solo_agent"` 发出的模型一律回 `code 4011`——所以 wire 函数表 `TRAE_DIRECTORY_FUNCTIONS.ai` 从 `['solo_agent','solo_work_remote','solo_work_lite']` 改为 `['solo_work_remote','solo_work_lite','solo_agent_remote']`：让目录可见的新模型仍通过真正可调用的 function 去调，`solo_agent_remote` 放最后，使两个 function 都列出的模型保持无 Remote 门禁的 IDE function。CN 区域未重新测量，维持原列表不变（union 会保留网关返回的任何组）。
+
+### Bug Fixes
+
+- **国际版订阅状态显示错误——Pro 会员被显示为「暂无有效套餐」**（issue #19 症状二）：
+  - 卡片的判据只有 `has_package`，但那个字段回答的是「是否存在套餐权益对象」，不是「账号处于什么档位」——付费会员可以持有档位而没有套餐行，报告人的账号正是如此。
+  - Trae 同时返回的**权威档位字段** `user_pay_identity` / `user_pay_identity_str`（实测免费账号为 `0` / `"Free"`）此前在插件源码里**零引用**，被直接丢弃。
+  - 现在 `payStatus()` 完整保留两个档位字段（缺失时省略，不伪造），卡片判定改为 `has_package ∪ 档位非 Free`，并把档位名渲染进套餐行：「已有有效套餐 · Pro」/「暂无有效套餐 · Free」——免费用户看到**为什么**没有套餐，而不是只看到一个布尔。
+  - **只有精确的 `Free`（大小写不敏感）算免费**：未知或未来的档位名按付费处理。把付费会员错标成免费，比把免费账号显示成未知档位，是伤害更大的那个错误。
+- **订阅门禁错误被吞成「Stream ended without finish_reason」**（issue #19 症状三）：
+  - **现象**：免费/低档位账号选中需订阅的模型（如 `GPT-6-Sol`），得到的是一句像网络故障的报错，且会被重试多次。Trae 实际返回的是 **HTTP 200** + `event:error {"code":1005,"extra":"{\"plan\":N}"}`（`extra` 是 wire 上的 JSON **字符串**，订阅门禁只体现在 `extra.plan`）。
+  - **根因**：旧实现把上游答复原样以 200 转发，中途 `controller.error()` 截断流——HTTP 头已按 200 发出，`code 1005` 与 `plan` 在 HTTP 边界处丢失，pi-ai 只看到「流没给 finish_reason 就断了」，按传输故障处理。
+  - **修法**：`bridgeTraeSoloStreamOrFail` 在转发前**窥探流头**——任何输出开始之前的拒绝被翻译成真实的错误结果：`1005` → `402 hard_credit`（携带 plan 与「需要付费档」的文案，`hard_credit` 是让客户端停止而非重试的语义，402 是如实的状态码），`4011` / `4001` / 未知码 → `400 client`。code、plan、以及 Trae 那句与 code 相矛盾的原文（如 4011 自称"rate limit"）**全部保留在 message 里**。
+  - 输出已开始后到来的拒绝（拒绝打断正在进行的回答）：流以翻译后的可读错误终止，而不是裸截断。
+  - **窥探不伤健康流**：被窥探消费的头部字节逐字节重放；队列/进度/输出等任何 Trae 自有事件即触发直通，缓冲不超过首个事件。排队事件、分片工具调用等既有行为不变。
+  - **顺带登记两个此前不认识的错误码**（`grep` 证实源码与测试均零命中）：`1005` = 订阅门禁（档位不够，`extra.plan` 指明所需档位）；`4011` = 该 function 不提供此模型（其自报文案声称 rate limit，具有误导性）。已知的 `4001` = `config_name` 不被该 function 接受，语义不变。
+
+### Tests
+
+- **全仓 373 → 392（+19），含 5 次变异验证全部被抓**：
+  - `tests/solo-bridge.spec.ts` **+11**：`describeTraeFailure` 文案 5 例（1005 带 plan、4011 用 hint 而把误导原文降级为 detail、未知码回退、无 code 事件不虚构后缀、已解包的 extra 对象也能读 plan）；`bridgeTraeSoloStreamOrFail` 策略 5 例（1005→402 `hard_credit`、4011→400 `client`、无名事件经错误码带识别、健康流含排队事件直通且头部重放逐字节不丢、输出先行后拒绝的流中场景以可读 message 终止）；`TraeSoloBridge` 端到端 1 例（完整链路上订阅门禁成为错误结果而非被截断的 200 流）。其中「流中拒绝」用分块流构造：单块 body 会被窥探一起解码，无法测到该路径。
+  - `tests/card-subscription.spec.tsx` **新文件 5 例**：渲染真实卡片断言档位行——Pro 从档位单独判定、无档位时套餐行仍工作、Free 命名而非只报布尔、试用窗口优先于档位文案，及 `traePlanIsPaid` 判据表（只有精确 Free 算免费，未知档位按付费）。一例说明：无档位字符串时 badge 与 value 渲染同一裸标签，`getByText` 会命中多个元素，须用 `getAllByText`——这例测试在上一会话中断前正以多元素匹配失败，本次接续修复。
+  - `tests/usage.spec.ts` **+2**：档位字段与 `has_package` 分开保留；上游不带档位时省略而非伪造。
+  - `tests/solo-remote.spec.ts` **+1**、`tests/solo.spec.ts` 改写既有断言：目录 union 行为、AI 区域 function 顺序（`solo_agent` 必须绝迹）。
+  - **变异验证**（确认测试有约束力，5 次全部被抓）：① 分类忽略 1005 → 2 例失败；② plan 提取禁用 → 4 例失败；③ 窥探失效（打回旧行为，即本次要修的 bug）→ 4 例失败；④ 档位恒判免费 → 2 例失败；⑤ union 退回单组 → 3 例失败。恢复后 45 文件 392 例全绿。
+
+### Docs
+
+- `docs/ISSUE19_DIAGNOSIS.md`（随 2.4.0 后的 `009d9a7` 提交）：三个症状的完整取证——remote 目录两组的差集与报告人 IDE 的模型逐一吻合、`user_pay_identity_str` 零引用的 grep 证据、以真实上游字节喂给 bridge 复现「截断的 200」。
+- `docs/INTL_PAID_TIER_PROBE.md`（`d76800d`）：付费账号是否有专属接口的探索结论——**没有**，免费/付费同端点同目录，差别在调用时授权；含 `1005` / `4011` 的对照实验记录。
+
 ## 2.4.0 (2026-09-29)
 
 > **包含仍未发布的 2.3.2。** 2.3.2 的 peer 范围修复（`>=0.1.7-rc.1 <0.2.0-0` → `<0.3.0-0`，见下一节）
