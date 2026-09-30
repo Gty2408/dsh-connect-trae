@@ -95,6 +95,12 @@ npm view dsh-connect-trae dist-tags.latest   # 应为 X.Y.Z
 
 > 刚发布后 registry 读缓存可能有短暂延迟，稍等重查即可。
 
+> ⚠️ **「还没显示」不等于「没发出去」，但也要分得清是哪种。** 先看 `~/.npm/_logs` 里那次 publish 的日志：
+> 有 `PUT 202` + "Your package is being processed" = registry 已受理，等几分钟（2.5.0 实测约 90 秒
+> dist-tags 翻转）；**连 `PUT` 行都没有** = 请求未到达 registry（npm 11 的 web-auth 把 2FA 挑战放在
+> PUT 之前，非交互会话会在此被拦），这才是真失败，需在交互终端执行。完整三态判别表见
+> `docs/RELEASE_EXPERIENCE.md` 6.9。
+
 > ⚠️ **发布失败时先查 registry，别先看错误信息。** 2.4.0 发布当天，`pnpm publish` 报了
 > `ERR_PNPM_OTP_NON_INTERACTIVE`，据此判为「没发出去」——**判错了**：包在报这条错误之前就已上传完成
 > （`registry.time` 与报错同一分钟），线上 `latest` 早已是 2.4.0。随后手动 `npm publish` 只得到

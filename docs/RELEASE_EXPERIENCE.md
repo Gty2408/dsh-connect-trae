@@ -259,6 +259,26 @@ npm view dsh-connect-trae versions | tr ',' '\n' | grep -F "X.Y.Z"
 - 用户负责：`npm login` 与 `npm publish`（涉及 2FA 浏览器确认，且凭据不应交给 AI）；
 - **不要**代替用户执行 `npm login` / 改 `~/.npmrc` / 处理凭据。
 
+### 6.9 从 npm 日志**三态判别**发布状态（2026-10-01 发布 2.5.0 实录）
+
+6.1 与 6.7 覆盖了「已受理但不可见」与「上传后报凭据错」两类假象。2.5.0 补上了第三种情形，并给出
+一个比「反复轮询 registry」更快的判别式——**先读 `~/.npm/_logs` 里那次 publish 的日志，看有没有
+`PUT` 行**：
+
+| 日志特征 | 状态 | 该做什么 |
+| --- | --- | --- |
+| **没有任何 `PUT` 行** | 请求未到达 registry（npm 11 的 web-auth 把 2FA 挑战放在 PUT **之前**，非交互会话里 `npm`/`pnpm` 都在此被拦） | **真失败**：交回用户在交互终端执行（见 6.8） |
+| `PUT 202` + "Your package is being processed…" | registry 已受理，异步处理管线尚未对外可见 | **等待**：2.5.0 实测约 90 秒后 dist-tags 翻转；期间直查 `/-/package/<name>/dist-tags` 比本地 `npm view` 更接近实时 |
+| `PUT` 之后才出现凭据报错 | 可能早已发布成功（6.7） | 按第 7 步查 registry 定论 |
+
+**经过**：2.5.0 由 AI 代跑 `npm publish` / `pnpm publish`，两者都在没有任何 PUT 的情况下报 EOTP
+（与 2.4.0 那次「先传包、后要 OTP」的顺序**相反**）；直查 registry 确认线上为空——这次是**真失败**。
+交回用户在交互终端执行后成功，日志为 `PUT 401 → web-auth 轮询 → PUT 202 → processing 提示`。
+发布后 `npm view` 仍显示 2.4.0、用户来问时，正是靠日志里的 `PUT 202` 一锤定音「已受理、等即可」。
+
+**教训**：判别发布状态时，**日志里的 `PUT` 行比 registry 轮询更快也更可靠**——轮询只能看到
+「现在还没有」，区分不了「正在处理」与「根本没发」。两个都查，先查日志。
+
 ---
 
 *本文档为经验备忘，来源：`dsh-subagent-default-model`（本机 `../dsh-subagent-default-model`，GitHub `dingminhua/dsh-subagent-default-model`）。新增经验请继续追加，保持与根目录 `RELEASING.md` 的权威流程一致。*
