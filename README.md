@@ -86,7 +86,7 @@ DSH PiAiAdapter（每个 provider 一套）
 
 插件提供的是 Trae **SOLO 通道**的模型（`DeepSeek-V4-Flash-Official`、`DeepSeek-V4-Pro-Official`、`GLM-5.3`、`GLM-5.2`、`Kimi-K3`、`MiniMax-M3`、`Qwen3.8-Max`、`Doubao-Seed-*` 等），国内版与国际版均走这条通道。
 
-以下 3 个模型目前来自 **TraeCode（Trae IDE）通道**，尚未开放到 SOLO 通道，因此本插件**暂不支持**：
+以下 3 个模型目前来自 **TraeCode（Trae IDE）通道**，尚未开放到 SOLO 通道：
 
 | 模型 |
 | --- |
@@ -94,7 +94,16 @@ DSH PiAiAdapter（每个 provider 一套）
 | `kimi-k2.8-preview` |
 | `qwen3.8-flash` |
 
-这 3 个模型只在 Trae IDE 客户端内可用，插件侧没有可调用的通道。**需要等官方把它们开放到 SOLO 通道后，插件才能支持。**
+它们**会出现在模型列表里**（Trae 的目录列出了它们），但插件侧暂时没有可调用它们的通道。选中后发送消息会得到一条**明确的错误**，例如：
+
+```
+Trae does not serve this model under the SOLO function the request used
+(config_name rejected) · Trae code 4001 · upstream: We're sorry, the param is invalid…
+```
+
+即「上游不提供该模型」被如实说明，而不是静默失败或像网络故障。**官方把它们开放到 SOLO 通道后，插件会自动可用**（判据就是能不能拿到调用 id），无需升级插件。
+
+> **为什么现在会显示（2026-10-02 起的策略）**：此前这类「目录里有、但拿不到调用 id」的模型会被**直接隐藏**，理由是「放出来只会报错」。但可调用名单是**按账号档位**下发的——在免费账号上测不到，不等于付费账号用不了（issue #19 的报告人就是 Pro：他的账号能调用本机免费账号被门禁挡住的模型）。**隐藏用户自己 Trae IDE 里有的模型，比让他看到一条明确的错误更糟**，所以改为：全部呈现 + 如实报错。
 
 > `deepseek-v4.1-flash` 曾在此列——`docs/DS41_CALLABILITY.md`（2026-09-15 取证）实测 8 个 SOLO function
 > 全部返回 `4001 param is invalid`。**上游后来把它开放到了 SOLO 通道**：当前实时目录里它带

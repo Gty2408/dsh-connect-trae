@@ -86,7 +86,7 @@ Notes:
 
 This plugin serves models from Trae's **SOLO channel** (`DeepSeek-V4-Flash-Official`, `DeepSeek-V4-Pro-Official`, `GLM-5.3`, `GLM-5.2`, `Kimi-K3`, `MiniMax-M3`, `Qwen3.8-Max`, `Doubao-Seed-*`, …), for both the domestic and international sides.
 
-The following three models currently come from the **TraeCode (Trae IDE) channel** and have **not** been opened up to the SOLO channel, so this plugin does **not** support them yet:
+The following three models currently come from the **TraeCode (Trae IDE) channel** and have **not** been opened up to the SOLO channel:
 
 | Model |
 | --- |
@@ -94,7 +94,16 @@ The following three models currently come from the **TraeCode (Trae IDE) channel
 | `kimi-k2.8-preview` |
 | `qwen3.8-flash` |
 
-These three are reachable only inside the Trae IDE client; there is no callable channel for them on the plugin side. **They can only be supported once Trae officially opens them up to the SOLO channel.**
+They **do appear in the model list** (Trae's directory advertises them), but the plugin has no channel that can call them yet. Sending a message with one selected produces an **explicit error**, for example:
+
+```
+Trae does not serve this model under the SOLO function the request used
+(config_name rejected) · Trae code 4001 · upstream: We're sorry, the param is invalid…
+```
+
+That is the upstream refusal stated plainly, rather than a silent failure or something that reads like a network fault. **Once Trae opens them up to the SOLO channel the plugin picks them up automatically** (the test is simply whether a callable id can be resolved) — no plugin upgrade needed.
+
+> **Why they are listed now (policy from 2026-10-02)**: such rows — present in the directory but with no resolvable callable id — used to be **hidden outright**, on the grounds that showing one only produces an error. But the callable rosters are issued **per account tier**: not seeing a model on a free account does not prove a paying account cannot call it (the reporter in issue #19 is on Pro, and their account calls models this machine's free account gets gated on). **Hiding models the user's own Trae IDE lists is worse than showing an explicit error**, so the behaviour is now: list everything, report refusals honestly.
 
 > `deepseek-v4.1-flash` used to be listed here — `docs/DS41_CALLABILITY.md` (evidence gathered 2026-09-15) measured `4001 param is invalid` from all eight SOLO functions. **Trae has since opened it up to the SOLO channel**: it now ships in the live directory with `wireFunction: solo_work_remote` and calls succeed (verified against a live refresh). This page had not caught up, so it is removed from the table.
 

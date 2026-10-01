@@ -1,5 +1,40 @@
 # Changelog
 
+## 2.6.0 (2026-10-02)
+
+> **包含仍未发布的 2.5.1。** 2.5.1（补问 `chat_v3`，国际版目录 11 → 17）只打了 tag、未推 npm，因此没有用户拿到过它；2.6.0 在同一棵树上带上它。
+>
+> 本版做了一件**行为上的反转**：目录里拿不到调用 id 的模型**不再被隐藏，而是照常显示**，调用失败时给出可读的上游错误。起因是 issue #19 的讨论——可调用名单是**按账号档位**下发的，用免费账号测不到，不能推出付费账号用不了；**隐藏用户自己 IDE 里有的模型，比让他看到一条明确的错误更糟**。
+
+### Features
+
+- **模型列表改为「全部呈现」：不再隐藏拿不到调用 id 的模型**（issue #19）：
+  - **原行为**：`mergeTraeModelSources` 会剔除「目录里有、但任何 function 的可调用名单里都没有」的行（2026-08-30 的结论：这类模型发出去必然 `4001 param is invalid`，所以不该暴露）。
+  - **为什么反转**：那个结论把**账号范围的事实**当成了**普遍事实**。可调用名单按账号档位下发，本机免费账号问不到不等于付费账号没有——报告人是 Pro，他的账号能正常调用本机免费账号被门禁（`1005`）挡住的模型。插件隐藏了他 Trae IDE 里明明有的模型，这才是更糟的结果。
+  - **现在的行为**：这些行照常出现在列表与勾选界面里；因为没有 wire 目标，调用会走显示 id + 默认 function，上游拒绝时由 2.5.0 引入的错误翻译如实转述，用户看到的是：
+    ```
+    Trae does not serve this model under the SOLO function the request used
+    (config_name rejected) · Trae code 4001 · upstream: We're sorry, the param is invalid…
+    ```
+    而不是「模型不见了」或一句像网络故障的提示。
+  - **实测（本机实时凭据 + 插件自身代码路径）**：国际版目录 **17 → 22**（新增 `gpt-6-astra`、`gpt-5.6-sol/terra/luna`、`glm-5.2` 这 5 个无调用目标的行）；国内版目录 **19 → 30**。无调用目标的行会随上游开放 SOLO 通道而自动变得可调用——判据就是能不能 join 到调用 id，无需再改插件。
+
+### Bug Fixes
+
+- **国内版目录补齐：读全 7 个货架，新增 11 个模型**（issue #19 跟进）：
+  - 国内版的发现名单此前只有 `solo_agent_remote` + `solo_work_remote`，把 `solo_coder`（12 个）、`chat_v3`（18 个）、`solo_agent`（18 个）、`solo_work_lite`（15 个）等组全部漏读——与国际版此前那个缺口形状相同。现在两个区域使用同一份组名单。
+  - 调用名单同步补上 `solo_agent_remote` / `chat_v3` / `solo_coder`（都在最后，只补缺口）：实测国内版新增可见 `Doubao-Seed-Code`、`Doubao-Seed-2.0-Code`、`glm-5.1`、`glm-5`、`glm-5v-turbo`、`DeepSeek-V4-Pro`、`DeepSeek-V4-Flash`、`kimi-k2.5`、`qwen-3.5`、`minimax-m2.7`、`qwen-3.6-plus` 等。
+  - **纠正一处我自己的测量错误**：2.5.1 曾记「CN 的 `solo_coder` 组里 3 个模型任何 function 都 4001，所以不能扩大 CN」——那是**探测脚本的 bug**：调用时用了展示名而不是该 function 返回的 `config_name`。用正确的 config_name 重测，`doubao-seed-2.0-code`、`deepseek-v4-pro`、`deepseek-v4-flash` 在 `solo_coder` / `chat_v3` 等下**全部正常出字**。（同一个坑在同一轮里踩了两次，见 `docs/RELEASE_EXPERIENCE.md` 的教训类型。）
+
+### Tests
+
+- **全仓 395 → 395**（改写 4 条既有断言为新的行为契约）：merge 保留无 wire 目标的行且不伪造 `wireConfigName` / `wireFunction`；国内版发现名单必须含 `solo_coder` / `chat_v3` / `solo_work_lite`；国内版调用名单的顺序与内容。
+- **变异验证 3 次全部被抓**：把 merge 改回「丢弃无线行」→ 2 例失败；把国内版调用名单改回两项 → 1 例失败；把国内版发现名单改回两项 → 2 例失败。恢复后 45 文件 395 例全绿。
+
+### Docs
+
+- README（中英）「暂不支持」一节改写：这类模型**会显示**，选中后得到明确的上游拒绝错误，并说明「按账号档位下发、免费账号测不到不等于付费不可用」的新策略。
+
 ## 2.5.1 (2026-10-02)
 
 > **补上一个 2.5.0 没修完的缺口**：国际版模型目录仍比应有的少。报告人升级 2.5.0 后反馈「pro 状态 PASS、调用 PASS，但模型数量还是没取全」——复测确认，并定位到插件**从未请求过的那个 function**。
