@@ -239,21 +239,33 @@ describe('mergeTraeModelSources', () => {
     expect(merged.find(model => model.id === 'glm-5.2')?.creditMultiplier).toBeUndefined()
   })
 
-  it('drops remote models that map to no wire config_name (uncallable → would 4001)', () => {
-    // Doubao-Seed-Code and glm-5.3 are advertised by the Remote directory but
-    // are NOT current `config_name`s in get_detail_param; sending them makes
-    // every request fail with 4001 "param is invalid". They must not ship.
+  it('keeps remote models that map to no wire config_name, without inventing a wire target', () => {
+    // Reversed 2026-10-02 (issue #19). These rows used to be dropped as
+    // "uncallable", but the wire rosters are ACCOUNT-SCOPED: a model missing
+    // from a free account's rosters may still be callable for a paying one, and
+    // the reporter's Pro account demonstrably calls models this free account
+    // gets gated on. Hiding a model the user's own Trae IDE lists is the worse
+    // error, so the row ships and its call fails with a readable upstream
+    // message (the bridge translates 4001/4011) instead of silently vanishing.
     const remote: TraeDiscoveredModel[] = [
       { id: 'Doubao-Seed-Code', name: 'Seed-Code', multimodal: true, reasoningSupported: true },
       { id: 'glm-5.3', name: 'GLM-5.3', multimodal: false, reasoningSupported: false },
       { id: 'glm-5.2', name: 'GLM-5.2', multimodal: false, reasoningSupported: false },
     ]
     const wire = [
-      { id: 'glm-5.2', name: 'GLM-5.2' },
+      { id: 'glm-5.2', name: 'GLM-5.2', function: 'solo_work_lite' },
       { id: 'Doubao-Seed-2.0-Code', name: 'Doubao-Seed-2.1-Turbo' },
     ]
     const merged = mergeTraeModelSources(remote, wire)
-    expect(merged.map(model => model.id)).toEqual(['glm-5.2'])
+    // Every remote row survives; the wire-only orphan still does not.
+    expect(merged.map(model => model.id)).toEqual(['Doubao-Seed-Code', 'glm-5.3', 'glm-5.2'])
+    // The matched row carries its wire target …
+    expect(merged.find(model => model.id === 'glm-5.2')).toMatchObject({ wireFunction: 'solo_work_lite' })
+    // … and the unmatched ones carry none, so the bridge falls back to the
+    // display id and the default function rather than sending a fabricated id.
+    const unmatched = merged.find(model => model.id === 'Doubao-Seed-Code')
+    expect(unmatched?.wireFunction).toBeUndefined()
+    expect(unmatched?.wireConfigName).toBeUndefined()
   })
 })
 
@@ -329,15 +341,19 @@ describe('only callable models are ever served', () => {
   // never survive step 1 and must not be added to the fallback in step 2.
   const IDE_ONLY = ['deepseek-v4.1-flash', 'glm-5.3-flash', 'kimi-k2.8-preview', 'qwen3.8-flash']
 
-  it('drops a remote row that has no matching wire config', () => {
+  it('keeps a remote row with no wire config, but never offers one in a fallback roster', () => {
+    // Reversed 2026-10-02 (issue #19): the row ships even without a wire match,
+    // because the wire rosters are account-scoped and hiding a model the user's
+    // IDE lists is worse than a readable failure at call time. What must NOT
+    // happen is the opposite direction — an IDE-only model appearing in the
+    // built-in fallback list, which is what the next case guards.
     const remote = [
       { id: 'glm-5.2', name: 'GLM-5.2', multimodal: false, reasoningSupported: false },
-      // Advertised by the remote directory but absent from the wire roster:
-      // exactly the shape of a dead config_name such as Doubao-Seed-Code.
       { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', multimodal: false, reasoningSupported: false },
     ]
     const merged = mergeTraeModelSources(remote, [{ id: 'glm-5.2', name: 'GLM-5.2' }])
-    expect(merged.map(model => model.id)).toEqual(['glm-5.2'])
+    expect(merged.map(model => model.id)).toEqual(['glm-5.2', 'deepseek-v4.1-flash'])
+    expect(merged[1]?.wireConfigName).toBeUndefined()
   })
 
   it('never lists an IDE-only model in either fallback roster', () => {

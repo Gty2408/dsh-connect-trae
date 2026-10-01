@@ -210,12 +210,22 @@ function displayKey(name: string): string {
  * multiplier, reasoning and multimodal flags. `wire` (from `get_detail_param`)
  * supplies the real `llm_utils_chat` `config_name` — the only id the chat
  * endpoint actually accepts — plus the authoritative post-discount credit
- * multiplier when `display_contact_config` carries one. A remote row is only
- * callable when it maps to a wire `config_name`, so a remote row with no wire
- * match is DROPPED (it would otherwise be sent as an invalid `config_name` and
- * rejected with 4001 "param is invalid"). Verified 2026-08-30: the Remote
- * directory advertises `Doubao-Seed-Code` and `glm-5.3`, neither of which is a
- * current `config_name`; both fail every request, so they must not be exposed.
+ * multiplier when `display_contact_config` carries one.
+ *
+ * A remote row with no wire match is STILL KEPT (decision 2026-10-02, issue
+ * #19). It previously was dropped, on the reasoning that a row with no
+ * `config_name` is sent as an invalid one and rejected with 4001. That
+ * reasoning holds only for the accounts and functions we can measure, and
+ * measuring is the problem: whether a roster contains a model is ACCOUNT-
+ * SCOPED, so "no wire entry on a free account" cannot prove a paying account
+ * cannot call it. Dropping on that evidence silently denied those users models
+ * their own Trae IDE offers. The row therefore ships, and its call fails
+ * honestly: the bridge now translates the in-stream refusal into a readable
+ * error (`4001` → "Trae does not serve this model under the SOLO function the
+ * request used", `4011` → "Trae refused this model under the SOLO function the
+ * request used"), so a user who picks an unusable model is told why instead of
+ * seeing nothing. This reverses the 2026-08-30 note about `Doubao-Seed-Code`,
+ * which later turned out to be callable under `chat_v3`.
  *
  * Credit multiplier precedence: the wire's `display_contact_config` rate wins
  * whenever present (it is the post-discount figure the Trae IDE renders — the
@@ -245,14 +255,16 @@ export function mergeTraeModelSources(
   const result: TraeModelInfo[] = []
   for (const model of remote) {
     const wireModel = wireById.get(displayKey(model.id)) ?? wireByName.get(displayKey(model.name))
-    // No config_name maps to this display id → uncallable via llm_utils_chat.
-    // Drop it rather than advertise a model that always fails with 4001.
-    if (wireModel === undefined) continue
+    // A row with no wire match still ships (see the note above): the wire lists
+    // are account-scoped, so their silence is not proof of uncallability. With
+    // no `wireConfigName` the bridge sends the display id and the default
+    // function, and an upstream refusal comes back as a readable message
+    // rather than a silent absence.
     // The wire rate wins whenever it is present — it is the post-discount
     // figure the Trae IDE renders (`display_contact_config`); the Remote
     // directory's own `consumption_rate` can report up to 10x the undiscounted
     // value under a live promotion (e.g. 0.80 vs the IDE's 0.08).
-    const creditMultiplier = wireModel.creditMultiplier ?? model.creditMultiplier
+    const creditMultiplier = wireModel?.creditMultiplier ?? model.creditMultiplier
     result.push({
       id: model.id,
       name: model.name,
@@ -269,8 +281,8 @@ export function mergeTraeModelSources(
         reasoning: model.reasoning,
         reasoningEfforts: Object.fromEntries(model.reasoning.supported.map(effort => [effort, effort === 'low' ? 'light' : effort === 'xhigh' ? 'extra_high' : 'high'])) as Partial<Record<TraeReasoningEffort, string>>,
       },
-      ...wireModel.id !== '' && wireModel.id !== model.id ? { wireConfigName: wireModel.id } : {},
-      ...wireModel.function === undefined ? {} : { wireFunction: wireModel.function },
+      ...wireModel !== undefined && wireModel.id !== '' && wireModel.id !== model.id ? { wireConfigName: wireModel.id } : {},
+      ...wireModel?.function === undefined ? {} : { wireFunction: wireModel.function },
     })
   }
   return result
