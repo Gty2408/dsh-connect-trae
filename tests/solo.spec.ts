@@ -217,9 +217,16 @@ describe('region-scoped model directory function', () => {
     // is what the chat call replays, asking it made 8 of the 10 exposed
     // ai-region models uncallable. `solo_agent_remote` is the callable half
     // (it serves minimax-m3 / gemini-3.1-pro, which no solo_work_* lists).
-    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote'])
+    //
+    // `chat_v3` is joined LAST (issue #19 follow-up): it names configs no other
+    // chat function lists (kimi-k2.7-code, deepseek-v3.2, Dola-Seed-2.0-Code,
+    // …), and being last it can only fill gaps. Put it anywhere but last and it
+    // would win configs the earlier functions serve better.
+    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote', 'chat_v3'])
     expect(functions).not.toContain('solo_agent')
     expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/ide/v1/get_detail_param')
+    // chat_v3 must stay behind every function that can serve a shared config.
+    expect(functions.indexOf('chat_v3')).toBe(functions.length - 1)
   })
 
   it('asks every CN directory function, remote variant first', async () => {
@@ -285,16 +292,27 @@ describe('multi-function directory union (glm-5.3 regression, issue #7)', () => 
     await expect(client.fetchModels()).resolves.toMatchObject([{ id: 'glm-5.2', function: 'solo_work_lite' }])
   })
 
-  it('the ai region asks the two IDE functions before the Remote one', async () => {
+  it('the ai region asks the two IDE functions, then Remote, then chat_v3', async () => {
     const fetchImpl = stubDirectory()
     const client = new TraeSoloUpstreamClient({ credential: async () => intlCredentialSg, identity: async () => identity, fetchImpl: fetchImpl as unknown as typeof fetch })
     await client.fetchModels()
     const functions = fetchImpl.mock.calls.map(call => JSON.parse((call[1] as RequestInit).body as string)['function'])
     // Scope is what the chat call replays, so `solo_agent` (a roster function
     // that answers 4011 for every model) must not appear at all, and
-    // `solo_agent_remote` comes last so a config two functions list keeps the
-    // IDE function that serves it without the Remote plan gate.
-    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote'])
+    // `solo_agent_remote` comes after the two IDE functions so a config they
+    // both list keeps the IDE function that serves it without the Remote plan
+    // gate. (chat_v3's own placement is asserted by the next case.)
+    expect(functions.slice(0, 3)).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote'])
+    expect(functions).not.toContain('solo_agent')
+  })
+
+  it('the ai region joins chat_v3 last, so it can only fill gaps', async () => {
+    const fetchImpl = stubDirectory()
+    const client = new TraeSoloUpstreamClient({ credential: async () => intlCredentialSg, identity: async () => identity, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.fetchModels()
+    const functions = fetchImpl.mock.calls.map(call => JSON.parse((call[1] as RequestInit).body as string)['function'])
+    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote', 'chat_v3'])
+    expect(functions.indexOf('chat_v3')).toBe(functions.length - 1)
   })
 
   it('an explicit body function wins over the default chat function', () => {

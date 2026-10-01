@@ -68,10 +68,48 @@ describe('region-scoped directory gateway', () => {
     ] } }), { status: 200 }))
     const client = new TraeSoloRemoteCatalogClient({ credential: async () => intlCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.fetchModels()).resolves.toHaveLength(1)
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote')
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote,chat_v3')
     const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>
     expect(headers['Referer']).toBe('https://coresg-normal.trae.ai/')
     expect(headers['x-preferenced-language']).toBe('en')
     expect(headers['x-trae-user-timezone']).toBe('Asia/Singapore')
+  })
+
+  it('asks the ai directory for chat_v3, its only source of three callable models', async () => {
+    // Measured 2026-10-01 (issue #19 follow-up): deepseek-v3.2,
+    // gemini-3-flash-premium and gemini_2.5_flash_premium appear in NO other
+    // group, and all three answer normally through llm_utils_chat under
+    // chat_v3. Discovery alone does not expose them — the wire join does — but
+    // without the group they could never be discovered at all.
+    const intlCredential: TraeCredential = {
+      accessToken: 'token', userId: 'uid', host: 'https://growsg-normal.trae.ai', userRegion: 'SG',
+      expiresAtMs: Date.now() + 1000, edition: 'solo-sg', source: 'desktop',
+    }
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ code: 0, data: { list: [
+      { function: 'chat_v3', models: [{ name: 'deepseek-v3.2', display_name: 'DeepSeek-V3.2' }] },
+    ] } }), { status: 200 }))
+    const client = new TraeSoloRemoteCatalogClient({ credential: async () => intlCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await expect(client.fetchModels()).resolves.toMatchObject([{ id: 'deepseek-v3.2' }])
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain('chat_v3')
+  })
+
+  it('leaves the CN discovery list alone', async () => {
+    // CN's solo_coder group would add models, but it mixes three that answer
+    // 4001 under every chat function measured with callable ones, and the merge
+    // cannot separate them. Widening CN without that resolution would advertise
+    // models that cannot be called — the failure the wire join exists to avoid.
+    const cnCredential: TraeCredential = {
+      accessToken: 'token', userId: 'uid', host: 'https://trae-api-cn.mchost.guru', userRegion: 'CN',
+      expiresAtMs: Date.now() + 1000, edition: 'cn', source: 'desktop',
+    }
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ code: 0, data: { list: [
+      { function: 'solo_work_remote', models: [{ name: 'glm-5.3', display_name: 'GLM-5.3' }] },
+    ] } }), { status: 200 }))
+    const client = new TraeSoloRemoteCatalogClient({ credential: async () => cnCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
+    await client.fetchModels()
+    const url = String(fetchImpl.mock.calls[0]?.[0])
+    expect(url).toBe('https://solo.trae.cn/api/remote/v1/models?functions=solo_agent_remote,solo_work_remote')
+    expect(url).not.toContain('chat_v3')
+    expect(url).not.toContain('solo_coder')
   })
 })
