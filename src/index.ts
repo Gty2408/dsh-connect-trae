@@ -30,6 +30,7 @@ import { createTraeRawGateway } from './raw-gateway.ts'
 import { resolveTraeRawRuntime } from './raw-resolver.ts'
 import type { TraeRawDiagnostic } from './raw-diagnostic.ts'
 import { TraeDelegatingUpstreamClient } from './delegating-upstream.ts'
+import { probeModelsSequentially } from './model-probe.ts'
 import { TraeUsageClient } from './usage.ts'
 import { registerTraeUsageRoute } from './web-status.ts'
 import { unwrapVolatile } from './status-paths.ts'
@@ -113,6 +114,8 @@ export {
 } from './status-paths.ts'
 export { createTraeShim, type TraeShim } from './shim.ts'
 export { UnconfiguredTraeUpstreamClient, type TraeChatResult, type TraeUpstreamClient } from './upstream.ts'
+export { classifyProbeError, classifyProbeResult, probeBody, probeModelsSequentially, probeOneModel, TRAE_PROBE_TIMEOUT_MS, type TraeProbeResult, type TraeProbeVerdict } from './model-probe.ts'
+export { TRAE_MODELS_TEST_PATH, type TraeModelsTestResponse, type TraeModelProbeVerdict } from './status-paths.ts'
 
 export const name = 'dsh-connect-trae'
 export const inject = ['llm']
@@ -335,6 +338,8 @@ interface TraeRegionStack {
   usageClient: TraeUsageClient
   /** Re-read this region's live directory from the upstream. */
   discoverModels(signal?: AbortSignal): Promise<readonly TraeModelInfo[]>
+  /** Test the given model ids for availability (one real minimal call each). */
+  probeModels(ids: readonly string[]): Promise<{ results: { id: string; verdict: string; detail: string }[]; skipped?: string[] }>
   /** Rebuild the adapter snapshot after `catalog.set`; no-op before registration. */
   invalidateAdapter: () => void
   /** Raw-Chat capability state for this region's card route. */
@@ -660,7 +665,35 @@ export function apply(ctx: Context, config: Config): void {
         // un-enabled models into the runtime catalog until the next save.
         return merged
       },
-      invalidateAdapter: () => {},
+      /**
+     * One-click availability test. The ids come from the card, so each one is
+     * checked against THIS region's live catalog first: a caller must not be
+     * able to spend quota probing arbitrary upstream config names, and a row the
+     * region does not know is reported as skipped rather than silently dropped.
+     *
+     * The probe goes through `upstream` — the same bridge real chats use — so
+     * wire resolution, function stamping and error translation all match what
+     * the user gets when they actually send a message.
+     */
+    probeModels: async (ids: readonly string[]) => {
+      const known = new Set<string>()
+      for (const model of [...catalog.current(), ...displayModels(current(), region)]) {
+        known.add(model.id.trim().toLowerCase())
+        known.add(model.name.trim().toLowerCase())
+      }
+      const testable: string[] = []
+      const skipped: string[] = []
+      for (const id of ids) {
+        if (known.has(id.trim().toLowerCase())) testable.push(id)
+        else skipped.push(id)
+      }
+      const results = await probeModelsSequentially(
+        (body, signal) => upstream.chatStream(body, signal),
+        testable,
+      )
+      return skipped.length === 0 ? { results } : { results, skipped }
+    },
+    invalidateAdapter: () => {},
       rawDiagnostic: () => rawDiagnostic(),
     }
   }
@@ -675,6 +708,7 @@ export function apply(ctx: Context, config: Config): void {
     enabledModelIds: region => regionStateOf(current(), region).enabledModelIds ?? [],
     regionEnabled: region => regionEnabled(current(), region),
     discoverModels: (region, signal) => stacks[region].discoverModels(signal),
+    probeModels: (region, ids) => stacks[region].probeModels(ids),
     rawDiagnostic: region => stacks[region].rawDiagnostic(),
   }))
 

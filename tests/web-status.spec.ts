@@ -5,7 +5,7 @@ import { TraeUsageClient, type TraeUsageOptions } from '../src/usage.ts'
 import type { TraeRegion } from '../src/region.ts'
 import type { TraeUsageRouteOptions } from '../src/web-status.ts'
 import { traeWebUsage } from '../src/web-status.ts'
-import { TRAE_CHECKIN_PATH, TRAE_USAGE_PATH } from '../src/status-paths.ts'
+import { TRAE_CHECKIN_PATH, TRAE_MODELS_TEST_PATH, TRAE_USAGE_PATH } from '../src/status-paths.ts'
 
 const expiresAtMs = Date.now() + 60_000
 const credential: TraeCredential = {
@@ -547,6 +547,70 @@ describe('registerTraeUsageRoute region dispatch', () => {
       const foreign = response()
       await route.handler({ method: 'POST', url: TRAE_CHECKIN_PATH, headers: { origin: 'https://evil.example.com' } }, foreign.res)
       expect(foreign.status()).toBe(403)
+    })
+  })
+
+  /**
+   * The availability probe is the only route besides the claim that spends
+   * something (a real chat call per model), so its guards are asserted against
+   * the PROBE CALL COUNT: a guard that answers without having prevented the
+   * spend is worse than no guard.
+   */
+  describe('model availability test route', () => {
+    /** A request whose body streams the given JSON, as the real POST does. */
+    function request(body: unknown, url = `${TRAE_MODELS_TEST_PATH}?region=cn`, headers: Record<string, string> = {}): unknown {
+      const text = typeof body === 'string' ? body : JSON.stringify(body)
+      return {
+        method: 'POST',
+        url,
+        headers,
+        async *[Symbol.asyncIterator]() { yield Buffer.from(text, 'utf8') },
+      }
+    }
+
+    it("probes the requested ids through the active region's bridge and reports each verdict", async () => {
+      const calls: string[][] = []
+      const captured = await mountRoutes({
+        probeModels: async (_region, ids) => {
+          calls.push([...ids])
+          return { results: ids.map(id => ({ id, verdict: 'available', detail: 'upstream answered' })) }
+        },
+      })
+      const route = captured.find(entry => entry.path === TRAE_MODELS_TEST_PATH)
+      if (route === undefined) throw new Error('test route was not registered')
+      const { res, status, body } = response()
+      await route.handler(request({ ids: ['glm-5.2', 'gpt-5.4'] }), res)
+      expect(status()).toBe(200)
+      expect(calls).toEqual([['glm-5.2', 'gpt-5.4']])
+      expect(body()).toMatchObject({ results: [{ id: 'glm-5.2', verdict: 'available' }, { id: 'gpt-5.4', verdict: 'available' }] })
+    })
+
+    it('spends nothing when the method, the origin or the body is wrong', async () => {
+      let spent = 0
+      const captured = await mountRoutes({
+        probeModels: async () => { spent += 1; return { results: [] } },
+      })
+      const route = captured.find(entry => entry.path === TRAE_MODELS_TEST_PATH)
+      if (route === undefined) throw new Error('test route was not registered')
+
+      const notPost = response()
+      await route.handler({ method: 'GET', url: `${TRAE_MODELS_TEST_PATH}?region=cn`, headers: {} }, notPost.res)
+      expect(notPost.status()).toBe(405)
+
+      const foreign = response()
+      await route.handler(request({ ids: ['x'] }, `${TRAE_MODELS_TEST_PATH}?region=cn`, { origin: 'https://evil.example.com' }), foreign.res)
+      expect(foreign.status()).toBe(403)
+
+      for (const bad of ['', '{', '{"ids":"glm-5.2"}', '{"ids":[]}']) {
+        const badResponse = response()
+        await route.handler(request(bad), badResponse.res)
+        expect(badResponse.status()).toBe(400)
+      }
+      // A caller may not spend calls on an unbounded list.
+      const tooMany = response()
+      await route.handler(request({ ids: Array.from({ length: 65 }, (_, i) => `m${String(i)}`) }), tooMany.res)
+      expect(tooMany.status()).toBe(400)
+      expect(spent).toBe(0)
     })
   })
 })

@@ -22,6 +22,7 @@ import {
   TRAE_ACCOUNTS_REFRESH_PATH,
   TRAE_CHECKIN_PATH,
   TRAE_MODELS_REFRESH_PATH,
+  TRAE_MODELS_TEST_PATH,
   TRAE_USAGE_PATH,
 } from './status-paths.ts'
 import type { TraeWebCheckin, TraeWebCredits, TraeWebUsage } from './status-paths.ts'
@@ -63,6 +64,11 @@ export interface TraeUsageRouteOptions {
   regionEnabled(region: TraeRegion): boolean
   /** Re-read one region's live directory from the upstream. */
   discoverModels?(region: TraeRegion, signal?: AbortSignal): Promise<readonly TraeModelInfo[]>
+  /**
+   * Test the given model ids for availability, one real (minimal) chat call
+   * each. Present only when the region's chat path is wired.
+   */
+  probeModels?(region: TraeRegion, ids: readonly string[]): Promise<{ results: { id: string; verdict: string; detail: string }[]; skipped?: string[] }>
   /** Raw-Chat capability state of the requested region. */
   rawDiagnostic?(region: TraeRegion): TraeRawDiagnostic
 }
@@ -79,6 +85,47 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body)
   res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) })
   res.end(payload)
+}
+
+/**
+ * How many models one test run may probe. Each one spends quota, so the cap is
+ * a spending limit as much as a request-size limit; the card tests the enabled
+ * models, which is a user-chosen set rather than the whole directory.
+ */
+export const TRAE_MODELS_TEST_LIMIT = 64
+
+/**
+ * Read the ids to test from a POST body.
+ *
+ * Only ids present in the region's live catalog are accepted downstream (see
+ * index.ts), so this reader only has to produce a bounded, string-only list.
+ */
+async function readModelTestBody(req: IncomingMessage): Promise<string[]> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = chunk as Buffer
+    size += buffer.byteLength
+    if (size > 64 * 1024) throw new Error('request body too large')
+    chunks.push(buffer)
+  }
+  const text = Buffer.concat(chunks).toString('utf8').trim()
+  if (text === '') return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    throw new Error('invalid JSON body')
+  }
+  const raw = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['ids'] : undefined
+  if (!Array.isArray(raw)) throw new Error('body must carry an ids array')
+  const ids: string[] = []
+  for (const value of raw) {
+    if (typeof value !== 'string') continue
+    const id = value.trim()
+    if (id !== '' && !ids.includes(id)) ids.push(id)
+  }
+  return ids
 }
 
 /** Loopback browser origins only; other devices are refused until trusted origins exist. */
@@ -291,6 +338,42 @@ export function registerTraeUsageRoute(ctx: Context, deps: TraeUsageRouteOptions
       },
     })
     /**
+     * One-click availability test for the enabled models.
+     *
+     * This ROUTE COSTS QUOTA: each tested model gets a real, minimal chat call.
+     * Every other plugin surface is read-only, so the guards here are tighter
+     * than a GET's — POST only, loopback origin only, and the id list is taken
+     * from the request body and validated against the region's live catalog, so
+     * a caller cannot spend calls on arbitrary upstream config names. The count
+     * is capped for the same reason.
+     */
+    const disposeModelsTest = ctx.webServer.register({
+      kind: 'exact',
+      path: TRAE_MODELS_TEST_PATH,
+      handler: async (req: IncomingMessage, res: ServerResponse) => {
+        if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        if (!loopbackOrigin(req)) return json(res, 403, { error: 'origin-not-trusted' })
+        if (deps.probeModels === undefined) return json(res, 503, { error: 'model test unavailable' })
+        const region = requestRegion(req, res)
+        if (region === undefined) return
+        let ids: string[]
+        try {
+          ids = await readModelTestBody(req)
+        } catch (error: unknown) {
+          return json(res, 400, { error: safeMessage(error) })
+        }
+        if (ids.length === 0) return json(res, 400, { error: 'no models to test' })
+        if (ids.length > TRAE_MODELS_TEST_LIMIT) {
+          return json(res, 400, { error: `too many models (limit ${String(TRAE_MODELS_TEST_LIMIT)})` })
+        }
+        try {
+          json(res, 200, await deps.probeModels(region, ids))
+        } catch (error: unknown) {
+          json(res, 500, { error: safeMessage(error) })
+        }
+      },
+    })
+    /**
      * Daily check-in claim — the ONLY route in this plugin that mutates
      * upstream account state, so it is guarded more tightly than its siblings:
      * POST only, loopback origin only, and the status read runs FIRST so a day
@@ -376,6 +459,7 @@ export function registerTraeUsageRoute(ctx: Context, deps: TraeUsageRouteOptions
     return () => {
       disposeCheckin()
       disposeRefresh()
+      disposeModelsTest()
       disposeAccounts()
       disposeUsage()
     }

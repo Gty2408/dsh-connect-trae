@@ -9,6 +9,13 @@ import type { TraeRegion } from './region.ts'
 export const TRAE_USAGE_PATH = '/plugins/dsh-connect-trae/usage'
 /** Plugin-owned live model refresh endpoint. */
 export const TRAE_MODELS_REFRESH_PATH = '/plugins/dsh-connect-trae/models/refresh'
+/**
+ * Plugin-owned availability probe: POST the model ids to test, get one verdict
+ * per model. Unlike every read-only sibling this route SPENDS quota — a real
+ * (minimal) chat call per model — so it is user-initiated only, and the card
+ * labels the button as consuming a small amount.
+ */
+export const TRAE_MODELS_TEST_PATH = '/plugins/dsh-connect-trae/models/test'
 /** Plugin-owned local account rescan endpoint. */
 export const TRAE_ACCOUNTS_REFRESH_PATH = '/plugins/dsh-connect-trae/accounts/refresh'
 /**
@@ -81,6 +88,38 @@ export interface TraeWebModel {
    * directory did not declare it, which is not a capability claim either way.
    */
   multimodal?: boolean
+  /**
+   * The availability verdict from the one-click test, when this card session
+   * has run one. Absent = not tested. Deliberately NOT persisted with the
+   * settings: it describes one moment on one account, and a stale verdict shown
+   * as current is worse than a blank field.
+   */
+  probe?: TraeModelProbeVerdict
+  /** Upstream's own words for the verdict, when it gave any. */
+  probeDetail?: string
+}
+
+/**
+ * One model's availability verdict from the one-click test.
+ *
+ * `unknown` is a first-class outcome, not a failure: a timeout, a proxy drop or
+ * a throttle says nothing about the model, and reporting it as unusable would
+ * make the user delete a model that works. Only an upstream refusal is negative.
+ */
+export type TraeModelProbeVerdict =
+  | 'available'
+  | 'gated'
+  | 'unsupported'
+  | 'rate_limited'
+  | 'auth'
+  | 'unknown'
+
+/** What the probe route answers with. */
+export interface TraeModelsTestResponse {
+  /** One entry per model tested, in the order they were sent. */
+  results: { id: string; verdict: TraeModelProbeVerdict; detail: string }[]
+  /** Models skipped because the region has no live catalog row for them. */
+  skipped?: string[]
 }
 
 /**
