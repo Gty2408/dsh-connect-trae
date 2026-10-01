@@ -1,5 +1,28 @@
 # Changelog
 
+## 2.5.1 (2026-10-02)
+
+> **补上一个 2.5.0 没修完的缺口**：国际版模型目录仍比应有的少。报告人升级 2.5.0 后反馈「pro 状态 PASS、调用 PASS，但模型数量还是没取全」——复测确认，并定位到插件**从未请求过的那个 function**。
+
+### Bug Fixes
+
+- **国际版模型目录 11 → 17：`chat_v3` 是一个从未被请求的宽名单**（issue #19 跟进）：
+  - **现象**：2.5.0 之后报告人仍看不到 `Dola-Seed-2.0-Code`、`kimi-k2.7-code`、`deepseek-v4-flash-0731` 等模型。
+  - **根因**：2.5.0 只扩大了**发现侧**（remote 目录读全部组），而**最终目录 = 发现 ∩ wire**（`mergeTraeModelSources` 会剔除 join 不到 `config_name` 的模型——这是防止「显示了但一点就 4001」的保护，本身正确）。问题是插件的 wire 名单只问过 `solo_work_remote` / `solo_work_lite` / `solo_agent_remote`，而 **`chat_v3` 从未被请求**——它恰恰是名单最宽的一个：ai 区域 40 个 `config_name`（仅次于不可用于聊天的 `solo_agent` 的 43 个），并且列着一批别的 function 都没有的模型。
+  - **实测（本机实时凭据，AI 区域）**：把 `chat_v3` 加入 wire 名单（**放在最后**，因此只会补缺口、不改变任何既有模型的 function 归属）后，用插件自身代码路径（`TraeSoloRemoteCatalogClient` + `TraeSoloUpstreamClient` + `mergeTraeModelSources`）跑实时上游：发现 22 → wire 51 → **最终目录 11 → 17**。新增的 6 个全部挂在 `chat_v3`：`Dola-Seed-2.0-Code`、`deepseek-v4-flash-0731`、`kimi-k2.7-code`、`deepseek-v3.2`、`gemini-3-flash-premium`、`gemini_2.5_flash_premium`；每个都用插件自己的 `prepareSoloBody` 信封逐个验证**可正常出字**（同一模型在 `solo_agent_remote` 下回 `4001 param is invalid`）。
+  - **发现侧同步**：`deepseek-v3.2`、`gemini-3-flash-premium`、`gemini_2.5_flash_premium` 只出现在 `chat_v3` 组，因此 remote 目录也补问该组（否则它们根本不会被发现）。
+  - **仍然不显示的**：`gpt-6-astra`、`gpt-5.6-Sol/Terra/Luna`、`glm-5.2` —— 它们在**任何** function 的 wire 名单里都不存在，对 `llm_utils_chat` 每个通道都返回 `4011`/`4001`。它们属于 Trae IDE 的内置通道，不是插件能走的 SOLO 通道；merge 剔除它们是**正确行为**（宁可没有，也不放一个点了就报错的模型）。另外 `gpt-5.5` 现在可以显示了（它在 `solo_work_remote` 的 wire 名单里，此前只是被发现侧漏读）。
+  - **CN 区域故意未动**：CN 的 `solo_coder` 组确实还藏着模型（`glm-5`、`glm-5.1`、`qwen-3.5` 可调用），但它与另外三个「任何 function 都 4001」的模型（`doubao-seed-2.0-code`、`deepseek-v4-pro`、`deepseek-v4-flash`）**混在同一组**，而 merge 无法按 function 区分它们。扩大 CN 发现等于把它们一起暴露出来——正是这条 join 规则要防的事，因此留待逐个模型定出可用 function 后再做。
+
+### Tests
+
+- **全仓 392 → 395**：新增「ai wire 名单把 `chat_v3` 排在最后（且断言它必须是最后一位，防止将来被挪到前面抢走既有模型的 config）」、「ai 发现名单请求 `chat_v3`」、以及一条**守护 CN 不被顺手扩大**的断言（CN 名单既不含 `chat_v3` 也不含 `solo_coder`）。
+- **变异验证 3 次全部被抓**：把 `chat_v3` 挪到名单最前（优先级被夺）→ 3 例失败；从 ai 发现名单去掉 `chat_v3` → 2 例失败；顺手扩大 CN 发现名单 → 2 例失败。恢复后 45 文件 395 例全绿。
+
+### Docs
+
+- `docs/MODEL_MANAGEMENT_DESIGN.md` 更正一处结论：2026-08-30 记的「`Doubao-Seed-Code` 不是任何 `config_name`、必须剔除」只对**当时问过的 function** 成立——它的 `config_name` 在 `chat_v3` 里且可正常调用。join 规则不变，变的是「有没有 wire」必须建立在**完整的 function 名单**上。
+
 ## 2.5.0 (2026-10-01)
 
 > **国际版（AI 区域）三条用户可见故障的修复**，全部来自 [issue #19](https://github.com/dingminhua/dsh-connect-trae/issues/19) 的报告与
