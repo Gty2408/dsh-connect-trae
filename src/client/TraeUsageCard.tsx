@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import {
   nextRegionEnabled,
@@ -14,13 +15,14 @@ import {
   TRAE_ACCOUNTS_REFRESH_PATH,
   TRAE_CHECKIN_PATH,
   TRAE_MODELS_REFRESH_PATH,
+  TRAE_MODELS_TEST_PATH,
   TRAE_REGIONS,
   TRAE_USAGE_PATH,
   traePlanIsPaid,
   unwrapVolatileDeep,
   withTraeRegion,
 } from '../status-paths.ts'
-import type { TraeWebCheckinClaim, TraeWebModel, TraeWebPayStatus, TraeWebUsage } from '../status-paths.ts'
+import type { TraeModelProbeVerdict, TraeModelsTestResponse, TraeWebCheckinClaim, TraeWebModel, TraeWebPayStatus, TraeWebUsage } from '../status-paths.ts'
 import type { TraeRegion } from '../region.ts'
 import { TRAE_PLUGIN_ICON } from './icon.ts'
 import { TRAE_CARD_CSS } from './styles.ts'
@@ -176,6 +178,34 @@ function payVerdict(payStatus: TraeWebPayStatus): { paid: boolean; tier?: string
   }
 }
 
+/**
+ * The verdict badge for one model, or null when it has not been tested.
+ *
+ * `unknown` renders as inconclusive, never as a failure: a throttle or a dropped
+ * connection says nothing about the model, and painting it the same red as a
+ * real refusal is what makes users delete working models.
+ */
+const PROBE_LABELS: Record<TraeModelProbeVerdict, TraeSettingsKey> = {
+  available: 'row.probeAvailable',
+  gated: 'row.probeGated',
+  unsupported: 'row.probeUnsupported',
+  rate_limited: 'row.probeRateLimited',
+  auth: 'row.probeAuth',
+  unknown: 'row.probeUnknown',
+}
+
+function probeBadge(
+  probe: { verdict: TraeModelProbeVerdict; detail: string } | undefined,
+  t: (key: TraeSettingsKey) => string,
+): ReactNode {
+  if (probe === undefined) return null
+  return (
+    <span className={`dsm-trae-model-probe dsm-trae-model-probe-${probe.verdict}`} title={probe.detail}>
+      {t(PROBE_LABELS[probe.verdict])}
+    </span>
+  )
+}
+
 function dotStyle(status: TraeWebUsage['status']): Record<string, string> {
   const color = status === 'signed-in'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
@@ -200,6 +230,16 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
     ai: { status: 'signed-out', accounts: [] },
   })
   const [busy, setBusy] = useState(false)
+  /**
+   * Availability verdicts from the one-click test, per region, keyed by model
+   * id. Session-only on purpose: a verdict is one moment on one account, and a
+   * persisted "not served" would keep claiming that long after upstream changed
+   * its mind.
+   */
+  const [probeByRegion, setProbeByRegion] = useState<Record<TraeRegion, Record<string, { verdict: TraeModelProbeVerdict; detail: string }>>>({ cn: {}, ai: {} })
+  const [testing, setTesting] = useState<{ done: number; total: number } | undefined>(undefined)
+  const [testError, setTestError] = useState<string | undefined>(undefined)
+  const [testSummary, setTestSummary] = useState<string | undefined>(undefined)
   const [settingsRevision, setSettingsRevision] = useState(0)
   /** Per-region unsaved model edits; a draft on one tab is never dropped by
    * switching to the other tab, only by that tab's discard/save. */
@@ -430,6 +470,58 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
       if (mounted.current) setWriteError(error instanceof Error ? error.message : t('row.requestFailed'))
     } finally {
       if (mounted.current) setTogglingRegion(undefined)
+    }
+  }
+
+  /**
+   * One-click availability test for the ENABLED models of the active region.
+   *
+   * One model per request, deliberately: the host probe is sequential anyway
+   * (Trae throttles bursts), and a per-model round trip lets each row show its
+   * verdict as soon as it is known instead of the card sitting blank for a
+   * minute. User-started, and it stops on the first authentication failure —
+   * every later probe would only repeat that answer.
+   */
+  const testEnabledModels = async (): Promise<void> => {
+    const ids = [...activeEnabledIds]
+    setTestError(undefined)
+    setTestSummary(undefined)
+    if (ids.length === 0) {
+      setTestError(t('row.modelsTestEmpty'))
+      return
+    }
+    setTesting({ done: 0, total: ids.length })
+    const collected: Record<string, { verdict: TraeModelProbeVerdict; detail: string }> = {}
+    let available = 0
+    let denied = false
+    try {
+      for (const [index, id] of ids.entries()) {
+        if (!mounted.current) return
+        const response = await fetch(withTraeRegion(TRAE_MODELS_TEST_PATH, activeRegion), {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ ids: [id] }),
+        })
+        const body = await response.json().catch(() => ({})) as TraeModelsTestResponse & { error?: string }
+        if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`)
+        const verdict = body.results?.[0]
+        if (verdict !== undefined) {
+          collected[id] = { verdict: verdict.verdict, detail: verdict.detail }
+          if (verdict.verdict === 'available') available += 1
+          setProbeByRegion(prev => ({ ...prev, [activeRegion]: { ...prev[activeRegion], [id]: { verdict: verdict.verdict, detail: verdict.detail } } }))
+          if (verdict.verdict === 'auth') { denied = true; break }
+        }
+        setTesting({ done: index + 1, total: ids.length })
+      }
+      if (mounted.current) {
+        setTestSummary(t('row.modelsTestDone', { available, total: Object.keys(collected).length }))
+        if (denied) setTestError(t('row.probeAuth'))
+      }
+    } catch (error: unknown) {
+      if (mounted.current) setTestError(t('row.modelsTestError', { message: error instanceof Error ? error.message : t('row.requestFailed') }))
+    } finally {
+      if (mounted.current) setTesting(undefined)
     }
   }
 
@@ -860,15 +952,31 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
                           <h3 className="dsm-trae-models-title">{t('row.modelsTitle')}</h3>
                           <p className="dsm-trae-models-summary">{t('row.modelsSummary', { count: activeEnabledIds.size })}</p>
                         </div>
-                        <button
-                          type="button"
-                          className="dsm-btn dsm-btn-outline"
-                          disabled={busy}
-                          onClick={() => { void refreshModels() }}
-                        >
-                          {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
-                        </button>
+                        <div className="dsm-trae-models-actions">
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy}
+                            onClick={() => { void refreshModels() }}
+                          >
+                            {busy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
+                          </button>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline"
+                            disabled={busy || testing !== undefined || activeEnabledIds.size === 0}
+                            title={t('row.modelsTestHint')}
+                            onClick={() => { void testEnabledModels() }}
+                          >
+                            {testing === undefined
+                              ? t('row.modelsTestEnabled')
+                              : t('row.modelsTesting', { done: testing.done, total: testing.total })}
+                          </button>
+                        </div>
                       </div>
+                      <p className="dsm-trae-models-hint">{t('row.modelsTestHint')}</p>
+                      {testSummary === undefined ? null : <p className="dsm-trae-models-summary">{testSummary}</p>}
+                      {testError === undefined ? null : <p className="dsm-trae-usage-error" role="alert">{testError}</p>}
                       <div className="dsm-trae-model-list">
                         {visibleModels.map(model => (
                           <div className={`dsm-trae-model${activeEnabledIds.has(model.id) ? '' : ' dsm-trae-model-disabled'}`} key={model.id}>
@@ -885,6 +993,7 @@ export function TraeUsageCard({ t, settingsScope, view }: TraeUsageCardProps) {
                                     {model.name}
                                     {model.creditMultiplier === undefined ? null
                                       : <span className="dsm-trae-model-name-rate">· x{model.creditMultiplier.toFixed(2)}</span>}
+                                    {probeBadge(probeByRegion[activeRegion][model.id], t)}
                                   </span>
                                 </span>
                               </label>
