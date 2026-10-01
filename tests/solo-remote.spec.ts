@@ -29,7 +29,7 @@ describe('TraeSoloRemoteCatalogClient', () => {
     // as-is — callability is decided by the wire join in mergeTraeModelSources,
     // never here.
     expect(models.map(model => model.id)).toEqual(['qwen3.8-max', 'gpt-5.6-sol', 'ignored'])
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://solo.trae.cn/api/remote/v1/models?functions=solo_agent_remote,solo_work_remote')
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://solo.trae.cn/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote,solo_work_lite,chat_v3,solo_coder,builder_v3')
   })
 
   it('emits a model listed by two groups only once', async () => {
@@ -68,7 +68,7 @@ describe('region-scoped directory gateway', () => {
     ] } }), { status: 200 }))
     const client = new TraeSoloRemoteCatalogClient({ credential: async () => intlCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
     await expect(client.fetchModels()).resolves.toHaveLength(1)
-    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote,chat_v3')
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://coresg-normal.trae.ai/api/remote/v1/models?functions=solo_agent,solo_agent_remote,solo_work_remote,solo_work_lite,chat_v3,solo_coder,builder_v3')
     const headers = (fetchImpl.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>
     expect(headers['Referer']).toBe('https://coresg-normal.trae.ai/')
     expect(headers['x-preferenced-language']).toBe('en')
@@ -94,22 +94,24 @@ describe('region-scoped directory gateway', () => {
   })
 
   it('leaves the CN discovery list alone', async () => {
-    // CN's solo_coder group would add models, but it mixes three that answer
-    // 4001 under every chat function measured with callable ones, and the merge
-    // cannot separate them. Widening CN without that resolution would advertise
-    // models that cannot be called — the failure the wire join exists to avoid.
+    // CN had the same shape of miss as ai: its solo_coder group went unread, so
+    // its models never appeared. Measured 2026-10-02: every model that group
+    // contributes is callable (glm-5 / glm-5.1 / qwen-3.5 / doubao-seed-2.0-code
+    // / deepseek-v4-pro / deepseek-v4-flash — each verified under a function
+    // whose roster names it). The earlier note claiming three of them answered
+    // 4001 everywhere was a probe bug: they had been called by display id.
     const cnCredential: TraeCredential = {
       accessToken: 'token', userId: 'uid', host: 'https://trae-api-cn.mchost.guru', userRegion: 'CN',
       expiresAtMs: Date.now() + 1000, edition: 'cn', source: 'desktop',
     }
     const fetchImpl = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => new Response(JSON.stringify({ code: 0, data: { list: [
-      { function: 'solo_work_remote', models: [{ name: 'glm-5.3', display_name: 'GLM-5.3' }] },
+      { function: 'solo_coder', models: [{ name: 'glm-5', display_name: 'GLM-5' }] },
     ] } }), { status: 200 }))
     const client = new TraeSoloRemoteCatalogClient({ credential: async () => cnCredential, fetchImpl: fetchImpl as unknown as typeof fetch })
-    await client.fetchModels()
+    await expect(client.fetchModels()).resolves.toMatchObject([{ id: 'glm-5' }])
     const url = String(fetchImpl.mock.calls[0]?.[0])
-    expect(url).toBe('https://solo.trae.cn/api/remote/v1/models?functions=solo_agent_remote,solo_work_remote')
-    expect(url).not.toContain('chat_v3')
-    expect(url).not.toContain('solo_coder')
+    expect(url).toContain('solo_coder')
+    expect(url).toContain('chat_v3')
+    expect(url).toContain('solo_work_lite')
   })
 })

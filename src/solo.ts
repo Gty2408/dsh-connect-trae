@@ -36,34 +36,38 @@ export const TRAE_SOLO_FUNCTION = 'solo_work_lite'
  * and therefore takes the last slot — after the two IDE functions that serve
  * their shared configs without the Remote plan gate.
  *
- * `chat_v3` is joined LAST on the ai region, and it is the widest chat roster of
- * all (measured 2026-10-01 on live credentials, issue #19 follow-up): its
- * `get_detail_param` answers 40 config_names on `ai` — more than any other
- * function except `solo_agent` (43, which cannot serve chat). It lists models
- * NO other chat function names. Being last, it only fills gaps: a config two
- * functions list keeps the earlier function, so no precedence is disturbed.
- * The models it unlocks were each verified callable end-to-end through the
- * plugin's own `prepareSoloBody` envelope (all six answered normally under
- * `chat_v3` and `4001 param is invalid` under `solo_agent_remote`):
+ * `chat_v3` is the widest chat roster of all (measured 2026-10-01 on live
+ * credentials, issue #19 follow-up): its `get_detail_param` answers 40
+ * config_names on `ai` — more than any other function except `solo_agent` (43,
+ * which cannot serve chat). It lists models NO other chat function names, and
+ * it is joined LAST so it only fills gaps: a config two functions list keeps
+ * the earlier function, so no precedence is disturbed. The ai models it unlocks
+ * were each verified callable end-to-end through the plugin's own
+ * `prepareSoloBody` envelope:
  *
  *   ai (+6): kimi-k2.7-code, deepseek-v4-flash-0731, deepseek-v3.2,
  *            gemini-3-flash-premium, gemini_2.5_flash_premium, Dola-Seed-2.0-Code
+ *
+ * CN joins `chat_v3` and `solo_coder` too (2026-10-02). Both are callable there
+ * — verified per model through `prepareSoloBody`, calling each model under a
+ * function whose roster names it: `glm-5` / `glm-5.1` / `qwen-3.5` and
+ * `deepseek-v4-pro` / `deepseek-v4-flash` under `solo_coder`, and
+ * `doubao-seed-2.0-code` under `solo_coder` / `solo_work_remote` /
+ * `solo_work_lite`. An earlier note here claimed those three answered `4001`
+ * "under every function" — that was a measurement error, not an upstream
+ * refusal: the probe had called them by display id while the chat endpoint needs
+ * the config_name its owning function returned.
  *
  * This also corrects an older note that `Doubao-Seed-Code` "has no config_name
  * and must stay hidden" (docs/MODEL_MANAGEMENT_DESIGN.md): it does have one,
  * under `chat_v3`.
  *
- * CN deliberately does NOT join `chat_v3`. There it is a no-op on its own
- * (that region's directory does not list the models it would unlock) and
- * pairing it with an expanded CN discovery would expose three configs that
- * answer `4001` under every chat function measured (`doubao-seed-2.0-code`,
- * `deepseek-v4-pro`, `deepseek-v4-flash`, all reachable only via `solo_coder`,
- * which carries working and non-working models mixed). Exposing a model that
- * cannot be called is the failure this list exists to prevent, so the CN
- * change waits for a per-model function resolution.
+ * A model in NO chat function's roster is still left to the merge: it ships
+ * with no wire target and its call fails with a readable upstream message
+ * rather than being hidden (see mergeTraeModelSources).
  */
 export const TRAE_DIRECTORY_FUNCTIONS: Readonly<Record<TraeRegion, readonly string[]>> = {
-  cn: ['solo_work_remote', TRAE_SOLO_FUNCTION],
+  cn: ['solo_work_remote', TRAE_SOLO_FUNCTION, 'solo_agent_remote', 'chat_v3', 'solo_coder'],
   ai: ['solo_work_remote', TRAE_SOLO_FUNCTION, 'solo_agent_remote', 'chat_v3'],
 }
 export const TRAE_SOLO_CHAT_PATH = '/api/agent/v3/llm_utils_chat'

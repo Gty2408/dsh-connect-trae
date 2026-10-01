@@ -29,22 +29,24 @@ export const TRAE_SOLO_REMOTE_BASE = 'https://solo.trae.cn/api/remote/v1'
  * `chat_v3` was added on 2026-10-01 (issue #19 follow-up) because it carries
  * three ai-region models that appear in NO other group — `deepseek-v3.2`,
  * `gemini-3-flash-premium`, `gemini_2.5_flash_premium` — and those three are
- * callable: with `chat_v3` also in the wire list (see TRAE_DIRECTORY_FUNCTIONS
- * in solo.ts) the ai directory goes from 11 visible models to 17, each verified
- * end-to-end. Discovery alone changes nothing; the wire join decides visibility,
- * and a discovered model with no wire match is dropped (see
- * mergeTraeModelSources).
+ * callable through it (see TRAE_DIRECTORY_FUNCTIONS in solo.ts).
  *
- * The CN list is left as it was on purpose. Its `solo_coder` group does carry
- * models the current CN list misses, but it mixes callable ones (`glm-5`,
- * `glm-5.1`, `qwen-3.5`) with three that answer `4001` under every chat
- * function measured, and nothing in the merge can separate them by group.
- * Widening CN discovery therefore waits for a per-model function resolution
- * rather than advertising models that cannot be called.
+ * Both regions now ask the SAME group list (2026-10-02). CN previously asked
+ * only `solo_agent_remote` + `solo_work_remote`, which left its `solo_coder`
+ * group (12 models) unread — the same shape of miss as the ai one. Every group
+ * below was measured to exist on both gateways; a region that does not serve a
+ * name simply returns no group for it, which the union tolerates. Reading costs
+ * one query and the merge no longer discards rows for lacking a wire match (see
+ * mergeTraeModelSources), so an unread group is a model silently missing from
+ * the user's own list — the failure this list exists to prevent.
+ *
+ * `builder_v3` is included for the same reason even though neither region's
+ * current wire lists name it: its rows are real directory entries, and whether
+ * a paying account can call one is not something this client can determine.
  */
 export const TRAE_REMOTE_DIRECTORY_FUNCTIONS: Readonly<Record<TraeRegion, readonly string[]>> = {
-  cn: ['solo_agent_remote', 'solo_work_remote'],
-  ai: ['solo_agent', 'solo_agent_remote', 'solo_work_remote', 'chat_v3'],
+  cn: ['solo_agent', 'solo_agent_remote', 'solo_work_remote', 'solo_work_lite', 'chat_v3', 'solo_coder', 'builder_v3'],
+  ai: ['solo_agent', 'solo_agent_remote', 'solo_work_remote', 'solo_work_lite', 'chat_v3', 'solo_coder', 'builder_v3'],
 }
 
 export interface TraeSoloRemoteCatalogOptions {

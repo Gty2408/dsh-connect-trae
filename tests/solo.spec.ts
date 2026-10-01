@@ -242,7 +242,10 @@ describe('region-scoped model directory function', () => {
     const functions = fetchImpl.mock.calls.map(call => JSON.parse((call[1] as RequestInit).body as string)['function'])
     // solo_work_remote is asked FIRST: it is the only CN function that lists
     // glm-5.3, and precedence decides which function a shared config binds to.
-    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite'])
+    // The three joined later (2026-10-02) are all measured callable on CN, and
+    // sitting behind the two solo_work_* functions means they can only add
+    // configs nothing earlier serves.
+    expect(functions).toEqual(['solo_work_remote', 'solo_work_lite', 'solo_agent_remote', 'chat_v3', 'solo_coder'])
   })
 })
 
