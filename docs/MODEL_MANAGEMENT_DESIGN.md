@@ -70,6 +70,8 @@ Trae
 
 > 为什么需要 `get_detail_param` 补充 wire id：两套接口对同一模型使用不同 id。只有 `get_detail_param` 的 `config_name` 才是 `llm_utils_chat` 真正接受的 id，Remote 目录的 `name` 只是展示名。2026-08-30 实测 `Doubao-Seed-Code`（Remote 展示 id）已经**不是**任何 `config_name`——Seed-Code 已下线/改名（现为 `Doubao-Seed-2.0-Code`、`seed-code-pro-0430`），发 `config_name=Doubao-Seed-Code` 必失败。
 
+> **更正（2026-10-01，issue #19 跟进）**：上一条的「不是任何 `config_name`」只对**当时提问过的那几个 function** 成立。补测 `chat_v3` 后发现 `Doubao-Seed-Code` 的 `config_name` **就在它的名单里**，并且用 `function: chat_v3` 调用**正常出字**（`glm-5.1`、`qwen-3.5` 同样如此）；ai 区域同理由 `chat_v3` 解锁 6 个模型（`kimi-k2.7-code`、`deepseek-v3.2`、`Dola-Seed-2.0-Code` 等）。join 规则本身不变（**join 不到 wire 的 remote 行仍然剔除**、不可调用的模型仍不暴露），变的是「有没有 wire」必须建立在**完整的 function 名单**上——`get_detail_param` 按 function 返回不同名单，漏问一个宽名单就会得出一批「不存在」的错误结论。
+
 已验证字段映射：
 
 | 来源 | Trae 字段 | 用途 |
