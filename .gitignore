@@ -1,5 +1,13 @@
 node_modules/
-lib/
+# lib/ is DELIBERATELY committed in this fork, unlike upstream.
+#
+# Upstream ignores it because it publishes to npm, where `prepack` builds it on
+# the way out. This fork is installed straight from GitHub, and a git install
+# gets the repository as-is — there is no `prepare` script, so an ignored lib/
+# would mean an installed plugin with no code at all. Committing the build also
+# keeps the install free of the `allowBuilds` build-approval step, which would
+# otherwise be a manual action. Run `pnpm run build` and commit the result
+# whenever src/ changes.
 coverage/
 *.log
 .env
