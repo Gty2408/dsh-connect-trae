@@ -1,5 +1,34 @@
 # Changelog
 
+## 2.8.0-gty.1 (2026-10-03)
+
+> **Fork release.** Everything below this entry is upstream work by
+> `dingminhua`; see [FORK.md](FORK.md). This fork adds one feature.
+
+### Features
+
+- **标题栏积分显示（Windows）**：在窗口顶部「应用 / 编辑」右侧显示账号的**可用积分总额**。
+  - **为什么要伸进 shadow root**：标题栏没有槽位。Windows 上那条菜单栏由 desktop preload
+    自己构建 —— 一个标了 `[data-windows-menu]` 的 `position: fixed` 元素，原生按钮放在
+    **open** 的 shadow root 里。`mode: 'open'` 是插件能追加内容的唯一原因。
+  - **刻意取舍**：读的是插件不拥有的 DOM。若将来 DSH 改动该结构，标签只是不出现 ——
+    `installCaptionCredits()` 安静降级、只记一次日志，供应商与设置卡片不受影响。
+  - **只显示总额**：DSH 真正能用的区域（已登录且未关闭）的 `credits.available` 之和。
+    被关闭或未登录的区域**不按 0 计入**，而是写进 tooltip，避免数字悄悄失真。
+  - **Work / 通用 拆分放 tooltip**：标题栏放不下，而这个区别重要 —— 上游卡片把 Work 积分
+    标为「DSH 不可用」（仅限 Trae 客户端内使用）。
+  - **每分钟刷新一次**，插件释放时标签被移除。
+
+### Tests
+
+- 全仓 413 → **420**（+7）：`tests/caption-credits.spec.tsx`
+  - 两个区域求和成**一个**数字（用不同数值，忽略一侧就会暴露）
+  - 只统计 DSH 能用的区域；未登录 / 已关闭的区域写进 tooltip 而不计入
+  - 无区域应答时显示 `积分 —`，而不是一个错的数字
+  - preload 尚未挂载菜单栏时**等待**它出现（观察 DOM，不放弃）
+  - 位置在「应用 / 编辑」之后，且**不放进** `role=menubar`（它是读数，不是菜单项）
+  - 释放后标签被移除且**不再轮询**
+
 ## 2.7.0 (2026-10-02)
 
 > **新增「一键测试启用模型」**：给每个已启用的模型发一条最小消息，看哪些**真的能应答**。

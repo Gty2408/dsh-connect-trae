@@ -26,6 +26,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import { TraeUsageCard } from './TraeUsageCard.tsx'
 import type { TraeUsageCardInjected } from './TraeUsageCard.tsx'
+import { installCaptionCredits } from './CaptionCredits.ts'
 import { en, zh } from './locales.ts'
 import type { TraeSettingsKey } from './locales.ts'
 
@@ -173,6 +174,15 @@ export function apply(ctx: ClientContext): void {
 
     registerCard('plugins.bundle.config', 'dsh-connect-trae')
     registerCard('plugins.row.config', 'dsh-connect-trae#dsh-connect-trae')
+
+    // The Windows caption menubar credit readout. Isolated like the card slots:
+    // it reaches into a DOM structure the plugin does not own, so a failure
+    // there must never take the settings card — or the host provider — down.
+    try {
+      ctx.effect(() => installCaptionCredits(), 'dsh-connect-trae: caption credits')
+    } catch (error: unknown) {
+      console.error('[dsh-connect-trae] caption credit label failed to install (models and card unaffected):', error)
+    }
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     console.error('[dsh-connect-trae] client card failed to load (host provider unaffected):', error)
